@@ -1,0 +1,4 @@
+# Ignore everything in home directory except README.md
+*
+!.gitignore
+!README.md

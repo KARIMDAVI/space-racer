@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Space Racer</title>
+    <link rel="stylesheet" href="./style.css" />
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+  </head>
+  <body>
+    <!-- 3D Canvas -->
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- UI Overlay -->
+    <div id="uiContainer">
+      <!-- HUD -->
+      <div id="hud">
+        <div class="score-display">DISTANCE: <span id="scoreValue">0</span></div>
+      </div>
+
+      <!-- Start Screen -->
+      <div id="startScreen" class="overlay-screen">
+        <h1 class="glow-text title">NEON RIDER</h1>
+        <p class="subtitle">Use LEFT/RIGHT arrows or A/D to steer.</p>
+        <p class="subtitle">Dodge the obstacles.</p>
+        <button id="startButton" class="glow-button">START ENGINE</button>
+      </div>
+
+      <!-- Game Over Screen -->
+      <div id="gameOverScreen" class="overlay-screen hidden">
+        <h1 class="glow-text danger">SYSTEM FAILURE</h1>
+        <p class="subtitle">FINAL DISTANCE: <span id="finalScore">0</span></p>
+        <button id="restartButton" class="glow-button">REBOOT</button>
+      </div>
+    </div>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

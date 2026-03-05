@@ -1,0 +1,123 @@
+/* Reset and Base Styles */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  overflow: hidden;
+  background-color: #000;
+  font-family: 'Orbitron', sans-serif;
+  color: #fff;
+  user-select: none;
+}
+
+/* 3D Canvas Layer */
+#gameCanvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 1;
+}
+
+/* UI Overlay Layer */
+#uiContainer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 10;
+  pointer-events: none; /* Let clicks pass through to canvas if needed, though buttons will have pointer-events auto */
+  display: flex;
+  flex-direction: column;
+}
+
+/* HUD */
+#hud {
+  padding: 20px 40px;
+  display: flex;
+  justify-content: space-between;
+  text-shadow: 0 0 10px #ffaa00;
+  font-size: 1.5rem;
+  letter-spacing: 2px;
+}
+
+/* Screens */
+.overlay-screen {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  backdrop-filter: blur(5px);
+  pointer-events: auto; /* Allow interacting with buttons */
+  transition: opacity 0.3s ease;
+}
+
+.overlay-screen.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Typography Aesthetics */
+.glow-text {
+  font-size: 4rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 8px;
+  margin-bottom: 10px;
+  color: #fff;
+}
+
+.glow-text.title {
+  text-shadow: 0 0 10px #ff8800, 0 0 20px #ff8800, 0 0 40px #ff8800;
+}
+
+.glow-text.danger {
+  text-shadow: 0 0 10px #ff0044, 0 0 20px #ff0044, 0 0 40px #ff0044;
+  color: #ffeeee;
+}
+
+.subtitle {
+  font-size: 1.2rem;
+  margin-bottom: 30px;
+  color: #ccc;
+  letter-spacing: 2px;
+}
+
+/* Buttons */
+.glow-button {
+  background: transparent;
+  color: #fff;
+  border: 2px solid #ff8800;
+  padding: 15px 40px;
+  font-size: 1.5rem;
+  font-family: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  letter-spacing: 3px;
+  box-shadow: 0 0 15px rgba(255, 136, 0, 0.5), inset 0 0 10px rgba(255, 136, 0, 0.3);
+  text-shadow: 0 0 5px #ff8800;
+  transition: all 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.glow-button:hover {
+  background: rgba(255, 136, 0, 0.2);
+  box-shadow: 0 0 25px rgba(255, 136, 0, 0.8), inset 0 0 15px rgba(255, 136, 0, 0.5);
+  transform: scale(1.05);
+}
+
+.glow-button:active {
+  transform: scale(0.95);
+}

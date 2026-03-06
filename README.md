@@ -37,7 +37,7 @@ To run this project locally, follow these steps:
 
 1. **Clone the repository:**
    ```bash
-   git clone <your-repo-url>
+   git clone https://github.com/KARIMDAVI/space-racer.git
    cd space-racer
    ```
 
@@ -55,3 +55,20 @@ To run this project locally, follow these steps:
 
 4. **Play!**
    Open your browser to the local address provided by Vite (usually `http://localhost:5173`).
+
+5. **Build for production:**
+   ```bash
+   npm run build
+   ```
+
+## 🤝 Contributing
+
+Contributions, issues, and feature requests are welcome!
+
+1. **Fork** this repository.
+2. **Create** a new branch: `git checkout -b my-feature`
+3. **Make** your changes and commit: `git commit -m "Add some feature"`
+4. **Push** to your branch: `git push origin my-feature`
+5. **Open** a Pull Request.
+
+Please make sure your code follows the existing style and that the game still runs correctly before submitting a PR.

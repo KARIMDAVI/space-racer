@@ -1,0 +1,16 @@
+{
+  "name": "space-racer",
+  "version": "1.0.0",
+  "description": "A high-speed 3D endless runner built with Three.js and Vite",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "^0.166.1"
+  },
+  "devDependencies": {
+    "vite": "^5.3.1"
+  }
+}

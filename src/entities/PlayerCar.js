@@ -1,19 +1,25 @@
 import * as THREE from 'three';
 import { State } from '../core/GameManager.js';
 import { buildCar } from './CarModel.js';
+import { ParticleEmitter } from '../render/ParticleEmitter.js';
 
 /**
  * ARCHITECTURE: The player's car
- * Decision: this module owns the car's Group, the light pool under it, its measured hitbox and
- *   all of its motion. The meshes themselves are assembled by CarModel.js, which this file is
- *   the only caller of.
+ * Decision: this module owns the car's Group, the light pool under it, its thruster
+ *   emitter, its measured hitbox, and all of its motion. The meshes themselves are assembled
+ *   by CarModel.js, which this file is the only caller of.
  * Reason: Ownership Map gives Environment "lighting", but the car's rim light is a *child of
- *   the car group*, and the light pool is placed from this file every frame. Handing either to
- *   Environment would mean Environment reaching into PlayerCar's state to move them — the exact
- *   internals-poking Principle I forbids.
+ *   the car group*. Handing it to Environment would mean Environment reaching into PlayerCar's
+ *   Group to attach it — the exact internals-poking Principle I forbids. The same argument
+ *   covers the emitter: Blueprint Phase 2 asks for thruster particles owned by a
+ *   domain module, "not a new global", and the thing they are attached to is the car.
  * Trade-off: "all lighting lives in one file" is no longer literally true. Grep for `Light`
  *   finds two places instead of one. Worth it for a car that can be added to any scene and
  *   still look right.
+ * If the car renders but nothing trails it, check in this order: 1) game.speed — the plume rate
+ *   is derived from it, so a zero speed is a silent, correct-looking off switch, 2) the
+ *   emitter's own saturation note in ParticleEmitter.js, 3) that update() is still being called
+ *   in every state, because the plume drains outside PLAYING too.
  */
 
 const CAR_SPEED_X = 20;   // lateral units/sec — deliberately unrelated to forward speed
@@ -40,6 +46,29 @@ const UNDERGLOW_Y = 0.04; // above the wheel contact plane, clear of the road su
 const WHEEL_SPIN_RATE = 9;
 const WHEEL_YAW = 0.28;
 const WHEEL_YAW_LERP = 0.18;
+
+/**
+ * Thruster exhaust. rate * lifespan is the live-particle ceiling: 420 * 0.55 = 231, comfortably
+ * under max, so the plume never starves at the top of the speed curve. The cap earns its place —
+ * rate scales with game speed, and speed has no upper bound over a long run.
+ */
+const THRUSTER = Object.freeze({
+  max: 300, color: 0xff7a1a, size: 0.34, gravity: 2.2, drag: 0.9, life: 0.55,
+  stream: Object.freeze({
+    direction: Object.freeze([0, 0, 1]), // backwards, toward the camera
+    speed: Object.freeze([22, 46]),
+    jitter: 0.5,
+    scatter: 3
+  })
+});
+const THRUSTER_RATE_PER_SPEED = 150;
+const THRUSTER_MAX_RATE = 420;
+/**
+ * Car-space exhaust port, level with the tail bar. A Vector3 rather than an array because the
+ * only consumer copies it into a scratch vector every frame, and `set(...array)` builds an
+ * arguments object on each call — a per-frame allocation for nothing (Principle III).
+ */
+const THRUSTER_NOZZLE = new THREE.Vector3(0, 0.5, 2.35);
 
 /**
  * The car's footprint, measured once from the assembled mesh in its rest pose.
@@ -71,10 +100,13 @@ export class PlayerCar {
   #group;
   #wheels;
   #underglow;
+  #thruster;
   #hitbox;
   #crashing = false;
   #steerable = false;
   #wheelYaw = 0;
+  /** The one scratch vector this class owns. Mutated in place, never reallocated. */
+  #nozzle = new THREE.Vector3();
 
   constructor(scene, bus) {
     const { car, wheels, underglow } = buildCar();
@@ -82,6 +114,8 @@ export class PlayerCar {
     this.#wheels = wheels;
     this.#underglow = underglow;
     scene.add(this.#group, this.#underglow);
+
+    this.#thruster = new ParticleEmitter(scene, THRUSTER);
 
     this.reset();
     // Measured after reset and before the first frame, while rotation is still zero. Steering
@@ -106,13 +140,17 @@ export class PlayerCar {
     this.#underglow.position.set(START_X, START_Y + UNDERGLOW_Y, START_Z);
     this.#underglow.visible = true;
 
+    // A fast restart would otherwise inherit the tail of the last run's plume.
+    this.#thruster.clear();
   }
 
   /**
-   * `speed` now drives the wheel spin — it was accepted and ignored before this change, with a
-   * note promising a future use. Lateral steering stays deliberately independent of how fast the
-   * world is moving, which is what keeps the car controllable at high score, so it is the
-   * *visuals* that read the speed and not the handling.
+   * `speed` drives the wheel spin and the exhaust rate. Lateral steering stays deliberately
+   * independent of how fast the world is moving — that is what keeps the car controllable at
+   * high score — so it is the *visuals* that read the speed, not the handling.
+   *
+   * Runs in every state the tick is not paused for, including GAME_OVER, so the plume already
+   * in flight drains away rather than vanishing on the crash frame.
    */
   update(dt, steerAxis, speed) {
     if (this.#crashing) {
@@ -123,6 +161,8 @@ export class PlayerCar {
     }
 
     this.#spinWheels(dt, steerAxis, speed);
+    this.#feedThruster(speed);
+    this.#thruster.update(dt);
     this.#underglow.position.x = this.#group.position.x;
   }
 
@@ -164,6 +204,21 @@ export class PlayerCar {
       wheel.node.rotation.x += roll;
       if (wheel.steers) wheel.node.rotation.y = this.#wheelYaw;
     }
+  }
+
+  /**
+   * Exhaust is emitted in *world* space and not parented to the car: a trail that followed the
+   * car laterally would move with it and stop reading as something left behind. The nozzle is
+   * carried through the group's matrix so the plume swings correctly when the car banks — one
+   * matrix-vector multiply on a vector this class already owns.
+   */
+  #feedThruster(speed) {
+    this.#nozzle.copy(THRUSTER_NOZZLE);
+    this.#group.localToWorld(this.#nozzle);
+    // Speed is 0 in the menu and 0 after a crash, so the plume switches itself off in both
+    // without either state being named here.
+    const rate = Math.min(speed * THRUSTER_RATE_PER_SPEED, THRUSTER_MAX_RATE);
+    this.#thruster.setContinuous(this.#nozzle, rate);
   }
 
   /**

@@ -133,7 +133,10 @@ const FRAGMENT_SHADER = /* glsl */`
   }
 `;
 
-/** One shared geometry and one shared material across both rails — they differ only in x. */
+/**
+ * One shared geometry and one shared material across both rails — they differ only in x.
+ * The material comes back because the biome recolours it; the Group does not need to.
+ */
 const buildRails = () => {
   const geometry = new THREE.BoxGeometry(RAIL_WIDTH, RAIL_HEIGHT, ROAD_LENGTH);
   const material = new THREE.MeshStandardMaterial({
@@ -150,11 +153,12 @@ const buildRails = () => {
     rail.position.set(x, ROAD_Y + RAIL_HEIGHT / 2, ROAD_NEAR_Z - ROAD_LENGTH / 2);
     rails.add(rail);
   }
-  return rails;
+  return { rails, material };
 };
 
 export class Road {
   #uniforms;
+  #railMaterial;
 
   constructor(scene) {
     this.#uniforms = {
@@ -177,11 +181,39 @@ export class Road {
     surface.rotation.x = -Math.PI / 2;
     surface.position.set(0, ROAD_Y, ROAD_NEAR_Z - ROAD_LENGTH / 2);
 
-    scene.add(surface, buildRails());
+    const { rails, material } = buildRails();
+    this.#railMaterial = material;
+    scene.add(surface, rails);
   }
 
   /** The whole per-frame cost of the road: one add, one modulo, one uniform write. */
   update(moveDist) {
     this.#uniforms.uScroll.value = (this.#uniforms.uScroll.value + moveDist / CELL) % SCROLL_PERIOD;
+  }
+
+  /**
+   * Cross-fades the road's palette between two biome entries. `t` is 0..1 and is owned by
+   * Environment — this method holds no clock and no memory of where the transition is, so
+   * calling it with the same `t` twice is a no-op in effect and calling it out of order is
+   * harmless. That is deliberate: the road is the thing being coloured, not the thing
+   * deciding when.
+   *
+   * Every lerp writes *into* a Color this class already owns — the two uniform values and the
+   * rail material's two colours — so a transition running at 60Hz for three seconds allocates
+   * nothing (Principle III). `Color.lerp` mutates the receiver and returns it, which is why
+   * `copy` then `lerp` is the whole operation rather than a temporary in between.
+   *
+   * The rail's emissive and its base colour are kept identical on purpose: emissiveIntensity
+   * is what makes a rail bloom, and letting the two drift apart would give the rail a lit
+   * surface in one hue and a glow in another, which reads as a lighting bug rather than
+   * as a colour.
+   */
+  applyBiome(from, to, t) {
+    this.#uniforms.uLineColor.value.copy(from.line).lerp(to.line, t);
+    this.#uniforms.uBaseColor.value.copy(from.base).lerp(to.base, t);
+    this.#uniforms.uGlow.value = from.glow + (to.glow - from.glow) * t;
+
+    this.#railMaterial.color.copy(from.rail).lerp(to.rail, t);
+    this.#railMaterial.emissive.copy(this.#railMaterial.color);
   }
 }

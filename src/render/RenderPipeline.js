@@ -5,6 +5,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { State } from '../core/GameManager.js';
+import { BIOME_FADE, OPENING_BIOME, biomeFor } from '../world/biomes.js';
 
 /**
  * ARCHITECTURE: Post-processing chain and the chase camera
@@ -74,6 +75,29 @@ const TRAUMA_DECAY = 1.6;     // units/sec — a crash shake lasts a bit over ha
 const TRAUMA_AMPLITUDE = 1.2; // world units at full trauma, before the ±0.5 random factor
 
 /**
+ * ADR (Principle II applied to a rendering value): hyperdrive's bloom is a *multiplier* held
+ * separately from the biome's strength, never a saved-and-restored copy of it.
+ *
+ * The obvious implementation is `saved = bloom.strength; bloom.strength *= 1.6` on start and
+ * `bloom.strength = saved` on end, and it is wrong in a way that only shows up in play: a biome
+ * transition crossing a hyperdrive would have its per-frame writes overwritten on the way in
+ * and then be stamped back to a stale value on the way out, leaving the run permanently at the
+ * previous biome's bloom. Two owners, one field. Keeping the base and the scale apart means
+ * "restore exactly" is not a thing that can be got wrong — ending hyperdrive sets the scale to
+ * 1 and re-derives, and whatever the biome had reached in the meantime is simply still there.
+ */
+const HYPERDRIVE_BLOOM_SCALE = 1.6;
+
+/**
+ * Degrees of extra FOV while hyperdrive runs, added to the speed-derived target rather than
+ * replacing it — the existing lerp then eases both the push and its release for free, which is
+ * why this is one addend and not a second animation. The speed boost already widens the view
+ * through FOV_PER_SPEED; this is the part that reads as the *world* rushing in rather than as
+ * the car simply going faster.
+ */
+const HYPERDRIVE_FOV_PUSH = 11;
+
+/**
  * Builds the chain and hands back the pieces that need to stay reachable.
  *
  * ADR (Principle IV / installed API): the Blueprint's Phase 2 line calls for SMAAPass, and
@@ -120,6 +144,19 @@ export class RenderPipeline {
   #game;
   #trauma = 0;
 
+  // The bloom strength the biome asks for, and the multiplier hyperdrive lays over it. The pass
+  // only ever sees their product — see #applyBloom and the ADR above.
+  #bloomBase = BLOOM_STRENGTH;
+  #bloomScale = 1;
+
+  // This module's own copy of the biome cross-fade. Environment runs the same clock for the
+  // scene's half of it; both read BIOME_FADE, so they cannot disagree about duration.
+  #fromBloom = OPENING_BIOME.bloom;
+  #toBloom = OPENING_BIOME.bloom;
+  #biomeProgress = 1;
+
+  #fovBoost = 0;
+
   constructor(canvas, scene, game, bus) {
     this.#game = game;
 
@@ -147,17 +184,45 @@ export class RenderPipeline {
     // the state each frame could not tell a fresh impact from the second frame after one.
     bus.on('crashed', () => { this.#trauma = Math.min(1, this.#trauma + TRAUMA_PER_CRASH); });
 
+    bus.on('tierChanged', ({ tier }) => this.#shiftBloom(biomeFor(tier).bloom));
+    // A fresh run resets the tier silently (see GameManager.start), so the snap back has to
+    // come off the state change. A resume is excluded — it enters PLAYING too.
+    bus.on('stateChanged', ({ from, to }) => {
+      if (to === State.PLAYING && from !== State.PAUSED) this.#snapBloom(OPENING_BIOME.bloom);
+    });
+
+    // Only hyperdrive touches the renderer. Shield and magnet are gameplay, and a pipeline that
+    // switched on all three would be reaching for effects nobody asked it to own.
+    bus.on('powerupStarted', ({ kind }) => this.#setHyperdrive(kind, true));
+    bus.on('powerupEnded', ({ kind }) => this.#setHyperdrive(kind, false));
+
     this.resize(); // the single place sizes are computed — boot goes through it too
   }
 
   /**
-   * The one hook Blueprint Phase 3's environment shifts need. Writing `bloom.strength` is
-   * genuinely all it takes — UnrealBloomPass reads the field at render time, so there is no
-   * rebuild and no cost to changing it every frame if a biome transition wants to ramp it.
+   * The one hook Blueprint Phase 3's environment shifts need, and it still is one: writing
+   * `bloom.strength` is genuinely all it takes — UnrealBloomPass reads the field at render
+   * time, so there is no rebuild and no cost to ramping it every frame.
+   *
+   * What changed in S7 is that the value handed in is now the *base*, not the final strength.
+   * Anything transient stacking on top (today, only hyperdrive) multiplies rather than
+   * overwrites, so a caller ramping a biome here never has to know what else is running.
    */
   setBloomStrength(value) {
-    this.#bloom.strength = value;
+    this.#bloomBase = value;
+    this.#applyBloom();
   }
+
+  /**
+   * Read-only observability, and deliberately not a matching pair of setters. Both values are
+   * derived every frame from things this module already owns — the biome base times the
+   * hyperdrive scale, and the speed-plus-boost FOV lerp — so a setter would be a second writer
+   * for a number with a perfectly good first one. Exposing the result costs nothing and makes
+   * "did the bloom actually go back to exactly where it was" a question that can be answered
+   * from outside instead of inferred from a screenshot.
+   */
+  get bloomStrength() { return this.#bloom.strength; }
+  get cameraFov() { return this.#camera.fov; }
 
   resize() {
     const width = window.innerWidth;
@@ -180,9 +245,43 @@ export class RenderPipeline {
   }
 
   render(dt) {
+    this.#advanceBloom(dt);
     this.#updateFov();
     this.#updateShake(dt);
     this.#composer.render(dt);
+  }
+
+  #applyBloom() {
+    this.#bloom.strength = this.#bloomBase * this.#bloomScale;
+  }
+
+  /** Silent when the new tier maps to the same biome — four biomes over six tiers means it often does. */
+  #shiftBloom(target) {
+    if (target === this.#toBloom) return;
+    // Interrupting a fade resumes from wherever it had reached, not from where it started.
+    this.#fromBloom = this.#bloomBase;
+    this.#toBloom = target;
+    this.#biomeProgress = 0;
+  }
+
+  #snapBloom(target) {
+    this.#fromBloom = target;
+    this.#toBloom = target;
+    this.#biomeProgress = 1;
+    this.setBloomStrength(target);
+  }
+
+  #advanceBloom(dt) {
+    if (this.#biomeProgress >= 1) return; // settled: no lerp, no write
+    this.#biomeProgress = Math.min(1, this.#biomeProgress + dt / BIOME_FADE);
+    this.setBloomStrength(this.#fromBloom + (this.#toBloom - this.#fromBloom) * this.#biomeProgress);
+  }
+
+  #setHyperdrive(kind, on) {
+    if (kind !== 'hyperdrive') return;
+    this.#bloomScale = on ? HYPERDRIVE_BLOOM_SCALE : 1;
+    this.#fovBoost = on ? HYPERDRIVE_FOV_PUSH : 0;
+    this.#applyBloom();
   }
 
   /**
@@ -195,7 +294,9 @@ export class RenderPipeline {
     const { state, speed } = this.#game;
 
     let target;
-    if (state === State.PLAYING) target = BASE_FOV + speed * FOV_PER_SPEED;
+    // #fovBoost is only ever non-zero during PLAYING (GameManager ends every power-up on
+    // game-over), so it rides on the speed term rather than needing a branch of its own.
+    if (state === State.PLAYING) target = BASE_FOV + speed * FOV_PER_SPEED + this.#fovBoost;
     else if (state === State.GAME_OVER) target = BASE_FOV;
     else return; // menu and pause hold whatever the last run left, exactly as before
 

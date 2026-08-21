@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { State } from '../core/GameManager.js';
+import { BIOME_FADE, OPENING_BIOME, biomeFor } from './biomes.js';
 import { Road } from './Road.js';
 
 /**
@@ -108,8 +109,18 @@ const buildSky = () => {
 export class Environment {
   #stars;
   #road;
+  #fog;
 
-  constructor(scene) {
+  // The biome cross-fade, as three fields rather than a queue: a transition that starts while
+  // another is running takes over from wherever the current one had reached, which is what
+  // `#from` is re-seeded with below. Tiers arrive minutes apart so overlapping fades are close
+  // to unreachable in practice — but "close to unreachable" is not a guarantee, and the
+  // alternative failure is a visible snap back to the previous biome's colour.
+  #from = OPENING_BIOME;
+  #to = OPENING_BIOME;
+  #progress = 1;
+
+  constructor(scene, bus) {
     this.#stars = buildStarField();
     this.#road = new Road(scene);
     scene.add(this.#stars, buildSky());
@@ -119,6 +130,22 @@ export class Environment {
     const sun = new THREE.DirectionalLight(0xaabbff, 0.5);
     sun.position.set(100, 100, 50);
     scene.add(sun);
+
+    // main.js builds the fog with the scene, before this module exists — it is part of what a
+    // scene *is* here, not something Environment brings. Held by reference and recoloured in
+    // place: replacing scene.fog with a new FogExp2 would force every material in the scene to
+    // recompile, which is a stall, not a fade.
+    this.#fog = scene.fog;
+    this.#applyBiome();
+
+    // Two subscriptions, one rule each. A tier edge starts a fade; a fresh run snaps, because
+    // GameManager resets the tier to 0 silently (see its start()) and a three-second fade back
+    // from `critical` would leave the opening seconds of a new run wearing the last run's
+    // colour. A resume is excluded for the same reason ObstacleManager excludes it.
+    bus.on('tierChanged', ({ tier }) => this.#shiftTo(biomeFor(tier)));
+    bus.on('stateChanged', ({ from, to }) => {
+      if (to === State.PLAYING && from !== State.PAUSED) this.#snapTo(OPENING_BIOME);
+    });
   }
 
   update(dt, game) {
@@ -127,8 +154,68 @@ export class Environment {
     this.#stars.position.z += STAR_DRIFT * dt;
     if (this.#stars.position.z > STAR_WRAP) this.#stars.position.z = 0;
 
+    // Ahead of the PLAYING gate on purpose: a run that ends mid-fade should finish arriving
+    // rather than freezing half-way between two palettes behind the game-over screen.
+    this.#advanceBiome(dt);
+
     if (game.state !== State.PLAYING) return;
 
     this.#road.update(game.moveDist);
+  }
+
+  /** Silent when the new tier lands in the same biome — four biomes over six tiers means it often does. */
+  #shiftTo(biome) {
+    if (biome === this.#to) return;
+    this.#from = this.#currentBlend();
+    this.#to = biome;
+    this.#progress = 0;
+  }
+
+  #snapTo(biome) {
+    this.#from = biome;
+    this.#to = biome;
+    this.#progress = 1;
+    this.#applyBiome();
+  }
+
+  /**
+   * Interrupting a fade needs a biome-shaped value for wherever it had reached, and every
+   * field of one is a plain lerp of the two it was between. Allocating a Color per field here
+   * is fine and is *not* a Principle III violation: this runs at most once per tier edge, five
+   * times in a long run, and the object it builds is held for the whole next transition rather
+   * than dropped on the next frame.
+   */
+  #currentBlend() {
+    if (this.#progress >= 1) return this.#to;
+    const t = this.#progress;
+    return {
+      id: `${this.#from.id}→${this.#to.id}`,
+      line: this.#from.line.clone().lerp(this.#to.line, t),
+      base: this.#from.base.clone().lerp(this.#to.base, t),
+      rail: this.#from.rail.clone().lerp(this.#to.rail, t),
+      fog: this.#from.fog.clone().lerp(this.#to.fog, t),
+      glow: this.#from.glow + (this.#to.glow - this.#from.glow) * t,
+      density: this.#from.density + (this.#to.density - this.#from.density) * t,
+      bloom: this.#from.bloom + (this.#to.bloom - this.#from.bloom) * t
+    };
+  }
+
+  #advanceBiome(dt) {
+    if (this.#progress >= 1) return; // settled: no lerps, no uniform writes, no cost
+    this.#progress = Math.min(1, this.#progress + dt / BIOME_FADE);
+    this.#applyBiome();
+  }
+
+  /**
+   * The road recolours itself from the same two entries — Road owns its uniforms and its rail
+   * material, and this module owns nothing but the clock and the fog. `bloom` is in the table
+   * too and is deliberately not read here: RenderPipeline owns the bloom pass and eases its
+   * own copy of the same transition.
+   */
+  #applyBiome() {
+    const t = this.#progress;
+    this.#road.applyBiome(this.#from, this.#to, t);
+    this.#fog.color.copy(this.#from.fog).lerp(this.#to.fog, t);
+    this.#fog.density = this.#from.density + (this.#to.density - this.#from.density) * t;
   }
 }

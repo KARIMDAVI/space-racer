@@ -41,18 +41,25 @@ const MSAA_SAMPLES = 4;
  * compromise, it is the correct sampling rate for what the pass actually produces.
  */
 const BLOOM_RESOLUTION_SCALE = 0.5;
-const BLOOM_STRENGTH = 0.9;
 const BLOOM_RADIUS = 0.55;
 /**
- * Tuned against the scene's actual materials, not picked off a tutorial. The composer
- * buffer is linear HDR — tone mapping happens in OutputPass, at the end — so this
- * threshold is compared against pre-ACES values. Everything meant to glow is emissive
- * past 1.0 there (rails at emissiveIntensity 2.6, the car's MeshBasicMaterial neon at a
- * flat 1.0, grid lines at uGlow 1.7); every lit surface is a dark roughness/metalness
- * standard material that peaks well under it. 0.85 sits in that gap. Lowering it to ~0.6
- * starts blooming the car's grey chassis and the whole frame goes milky.
+ * Tuned against the scene's actual materials, not picked off a tutorial. The composer buffer
+ * is linear HDR — tone mapping happens in OutputPass, at the end — so this threshold is
+ * compared against pre-ACES values, weighted Rec601 by LuminosityHighPassShader. Everything
+ * meant to glow clears it (rails land at luma 1.60, grid line cores at 0.92) and every lit
+ * surface is a dark roughness/metalness standard material that peaks well under it. 0.85 is
+ * the gap between those two populations. Lowering it toward 0.6 pulls the car's grey chassis
+ * and the antialiased edges of the grid lines in, and the whole frame goes milky.
  */
 const BLOOM_THRESHOLD = 0.85;
+/**
+ * Held down to 0.55 rather than the 0.9 this started at. Strength is a multiplier on an
+ * already-wide blur, and the rails and grid run the full length of the frame to the vanishing
+ * point — there is a lot of qualifying surface, so the pass reaches an oversaturated look far
+ * below the strength a scene with a few small emissive props would need. The neon still
+ * clearly glows; the sky behind it stays a sky.
+ */
+const BLOOM_STRENGTH = 0.55;
 
 /**
  * ADR (Principle III): camera shake is a decaying "trauma" scalar, not a per-frame random

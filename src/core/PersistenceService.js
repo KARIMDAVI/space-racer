@@ -13,7 +13,10 @@
  *   where storage is partitioned per-file in some browsers.
  */
 const STORAGE_KEY = 'spaceracer.v1';
-const EMPTY_SAVE = { highScore: 0 };
+// `muted` joins the blob rather than taking a key of its own — that is the whole point
+// of the one-blob decision above, and a save written before it existed still boots
+// because #load() spreads over these defaults.
+const EMPTY_SAVE = { highScore: 0, muted: false };
 
 export class PersistenceService {
   #save;
@@ -28,6 +31,15 @@ export class PersistenceService {
 
   submitScore(score) {
     this.#save.highScore = Math.floor(score);
+    this.#flush();
+  }
+
+  isMuted() {
+    return this.#save.muted;
+  }
+
+  setMuted(muted) {
+    this.#save.muted = muted;
     this.#flush();
   }
 

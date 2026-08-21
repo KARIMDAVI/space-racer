@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 
+import { AssetManager } from './core/AssetManager.js';
 import { EventBus } from './core/EventBus.js';
 import { GameManager } from './core/GameManager.js';
 import { InputHandler } from './core/InputHandler.js';
 import { PersistenceService } from './core/PersistenceService.js';
+import { AudioManager } from './audio/AudioManager.js';
 import { PlayerCar } from './entities/PlayerCar.js';
 import { Environment } from './world/Environment.js';
 import { ObstacleManager } from './world/ObstacleManager.js';
@@ -70,6 +72,11 @@ const player = new PlayerCar(scene, bus);
 const environment = new Environment(scene);
 const obstacles = new ObstacleManager(scene, bus, player); // reads the car's hitbox once, at build time
 const pipeline = new RenderPipeline(canvas, scene, game, bus); // subscribes to `crashed` for camera trauma
+const assets = new AssetManager();
+// Built before the bus.on lines below on purpose: EventBus dispatches in subscription
+// order, so AudioManager's `crashed` handler runs while the engine is still at speed,
+// rather than after game.gameOver() has already taken the run out of PLAYING.
+const audio = new AudioManager(bus, persistence, assets);
 const hud = new HUD(game, bus);
 
 // ObstacleManager reports the impact; GameManager decides what death means. This one
@@ -120,7 +127,12 @@ function tick() {
     hud.update();
   }
 
-  // Outside the gate on purpose: a paused frame shows the frozen scene, not black.
+  // Outside the gate for the mirror-image reason: a paused frame shows the frozen scene,
+  // and a paused game falls quiet. A module that isn't ticked can't ramp itself down, so
+  // gating this would leave the engine droning over the pause screen. AudioManager takes
+  // no delta — it schedules against the audio clock, which neither stalls with rAF nor
+  // dilates with the slow-motion beat above.
+  audio.update(game);
   pipeline.render(dt);
 }
 

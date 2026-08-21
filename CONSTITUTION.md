@@ -1,8 +1,14 @@
 # Space Racer — Project Constitution
 
 **Status:** Ratified
-**Version:** 1.0.0
+**Version:** 1.1.0
 **Ratified:** 2026-07-24
+**Amended:** 2026-08-20 — added `AudioManager` and `HUD` to the Ownership Map
+(MINOR, per Governance) ahead of the module split in `BLUEPRINT.md`'s
+upgrade plan, which introduces `ui/HUD.js` in its first implementation
+step and `audio/AudioManager.js` later. Both need a recorded owner before
+either module writes to its domain (the DOM overlay / the `AudioContext`),
+not just before rendering work starts.
 
 ## Preamble
 
@@ -67,6 +73,8 @@ to originate changes to a given concern — not employment or credit.
 | Post-processing (bloom, AA, chromatic aberration) | `RenderPipeline` | Owns `EffectComposer` and pass ordering |
 | Monetization (ads, IAP, SDK calls) | `MonetizationService` | Isolated behind an interface `GameManager` calls into — never the reverse |
 | Persistence (scores, currency, unlocks) | `PersistenceService` | Sole writer to local storage / backend; nothing else touches save data directly |
+| DOM overlay (HUD, menus, screens) | `HUD` | Sole writer to the DOM overlay; reads game state via `GameManager`/event bus only, never mutates it |
+| Audio (music, SFX, engine tone) | `AudioManager` | Sole owner of the `AudioContext`; all sound routes through it, no other module touches Web Audio |
 
 ## Governance
 

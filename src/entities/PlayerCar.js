@@ -5,13 +5,13 @@ import { ParticleEmitter } from '../render/ParticleEmitter.js';
 
 /**
  * ARCHITECTURE: The player's car
- * Decision: this module owns the car's Group, the light pool under it, its thruster
- *   emitter, its measured hitbox, and all of its motion. The meshes themselves are assembled
+ * Decision: this module owns the car's Group, the light pool under it, its two particle
+ *   emitters, its measured hitbox, and all of its motion. The meshes themselves are assembled
  *   by CarModel.js, which this file is the only caller of.
  * Reason: Ownership Map gives Environment "lighting", but the car's rim light is a *child of
  *   the car group*. Handing it to Environment would mean Environment reaching into PlayerCar's
  *   Group to attach it — the exact internals-poking Principle I forbids. The same argument
- *   covers the emitter: Blueprint Phase 2 asks for thruster particles owned by a
+ *   covers the emitters: Blueprint Phase 2 asks for thruster and crash particles owned by a
  *   domain module, "not a new global", and the thing they are attached to is the car.
  * Trade-off: "all lighting lives in one file" is no longer literally true. Grep for `Light`
  *   finds two places instead of one. Worth it for a car that can be added to any scene and
@@ -19,7 +19,7 @@ import { ParticleEmitter } from '../render/ParticleEmitter.js';
  * If the car renders but nothing trails it, check in this order: 1) game.speed — the plume rate
  *   is derived from it, so a zero speed is a silent, correct-looking off switch, 2) the
  *   emitter's own saturation note in ParticleEmitter.js, 3) that update() is still being called
- *   in every state, because the plume drains outside PLAYING too.
+ *   in every state, because the crash animation and the debris both run outside PLAYING.
  */
 
 const CAR_SPEED_X = 20;   // lateral units/sec — deliberately unrelated to forward speed
@@ -70,6 +70,16 @@ const THRUSTER_MAX_RATE = 420;
  */
 const THRUSTER_NOZZLE = new THREE.Vector3(0, 0.5, 2.35);
 
+const SHATTER = Object.freeze({
+  max: 200, color: 0xff9a2e, size: 0.32, gravity: -12, drag: 1.2, life: 1.1
+});
+const SHATTER_COUNT = 150;
+const SHATTER_SPREAD = 1.1;                   // debris spawns within the car's own volume
+const SHATTER_SPEED = Object.freeze([6, 22]); // frozen: emitBurst reads it, never keeps it
+const SHATTER_ORIGIN_Y = 0.6;                 // the car's rough centre of mass
+/** Seconds of game time the wreck takes to collapse into its own debris cloud. */
+const CRASH_COLLAPSE = 0.38;
+
 /**
  * The car's footprint, measured once from the assembled mesh in its rest pose.
  * Principle III: the alternative is `Box3.setFromObject` every frame, which walks every mesh in
@@ -101,12 +111,15 @@ export class PlayerCar {
   #wheels;
   #underglow;
   #thruster;
+  #shatter;
   #hitbox;
   #crashing = false;
   #steerable = false;
+  #crashTime = 0;
   #wheelYaw = 0;
-  /** The one scratch vector this class owns. Mutated in place, never reallocated. */
+  /** The two scratch vectors this class owns. Mutated in place, never reallocated. */
   #nozzle = new THREE.Vector3();
+  #burstOrigin = new THREE.Vector3();
 
   constructor(scene, bus) {
     const { car, wheels, underglow } = buildCar();
@@ -116,6 +129,7 @@ export class PlayerCar {
     scene.add(this.#group, this.#underglow);
 
     this.#thruster = new ParticleEmitter(scene, THRUSTER);
+    this.#shatter = new ParticleEmitter(scene, SHATTER);
 
     this.reset();
     // Measured after reset and before the first frame, while rotation is still zero. Steering
@@ -137,10 +151,15 @@ export class PlayerCar {
   reset() {
     this.#group.position.set(START_X, START_Y, START_Z);
     this.#group.rotation.set(0, 0, 0);
+    this.#group.scale.setScalar(1);
+    this.#group.visible = true;
+
     this.#underglow.position.set(START_X, START_Y + UNDERGLOW_Y, START_Z);
     this.#underglow.visible = true;
 
-    // A fast restart would otherwise inherit the tail of the last run's plume.
+    this.#crashTime = 0;
+    // A fast restart would otherwise inherit the previous run's debris hanging in mid-air.
+    this.#shatter.clear();
     this.#thruster.clear();
   }
 
@@ -149,20 +168,17 @@ export class PlayerCar {
    * independent of how fast the world is moving — that is what keeps the car controllable at
    * high score — so it is the *visuals* that read the speed, not the handling.
    *
-   * Runs in every state the tick is not paused for, including GAME_OVER, so the plume already
-   * in flight drains away rather than vanishing on the crash frame.
+   * Runs in every state the tick is not paused for, including GAME_OVER: the crash animation and
+   * the debris both live past the end of the run.
    */
   update(dt, steerAxis, speed) {
-    if (this.#crashing) {
-      this.#group.rotation.y += CRASH_SPIN * dt;
-      this.#group.rotation.z += CRASH_SPIN * dt;
-    } else {
-      this.#drive(dt, steerAxis);
-    }
+    if (this.#crashing) this.#collapse(dt);
+    else this.#drive(dt, steerAxis);
 
     this.#spinWheels(dt, steerAxis, speed);
     this.#feedThruster(speed);
     this.#thruster.update(dt);
+    this.#shatter.update(dt);
     this.#underglow.position.x = this.#group.position.x;
   }
 
@@ -187,6 +203,31 @@ export class PlayerCar {
       rotation.z = THREE.MathUtils.lerp(rotation.z, 0, BANK_LERP);
       rotation.y = THREE.MathUtils.lerp(rotation.y, 0, BANK_LERP);
     }
+  }
+
+  /**
+   * The wreck tumbles and collapses into the debris its own crash threw. This replaces the old
+   * endless spin rather than joining it: a car that tumbles forever behind the game-over screen
+   * reads as a stuck animation, and pairing it with a burst would say the burst was decoration.
+   * Squared so the car holds its shape for the first instant — the frame the shatter fires —
+   * then goes fast; a linear collapse reads as the car politely shrinking. Once it is gone the
+   * group is hidden outright rather than left at scale 0, which keeps a degenerate matrix out of
+   * the render walk and takes the car's point light with it.
+   */
+  #collapse(dt) {
+    if (!this.#group.visible) return;
+
+    this.#group.rotation.y += CRASH_SPIN * dt;
+    this.#group.rotation.z += CRASH_SPIN * dt;
+
+    this.#crashTime += dt;
+    const t = Math.min(1, this.#crashTime / CRASH_COLLAPSE);
+    if (t === 1) {
+      this.#group.visible = false;
+      this.#underglow.visible = false;
+      return;
+    }
+    this.#group.scale.setScalar(1 - t * t);
   }
 
   #spinWheels(dt, steerAxis, speed) {
@@ -225,12 +266,28 @@ export class PlayerCar {
    * ADR (Principle II): these two flags mirror a GameManager transition rather than duplicating
    * it. They select an animation mode — they are never read as the answer to "is the game
    * over?", and nothing outside this file can see them.
+   *
+   * The shatter fires from here rather than off a second `crashed` subscription. This handler
+   * already runs inside that emit chain (crashed → gameOver → stateChanged), so it is the same
+   * frame either way, and routing through the state machine means the burst inherits its
+   * guarantee of firing exactly once per death: gameOver() ignores a second impact, and
+   * #transition() is a no-op on a self-transition.
    */
   #onStateChanged(from, to) {
     this.#crashing = to === State.GAME_OVER;
     this.#steerable = to === State.PLAYING;
+    if (this.#crashing) this.#shatterCar();
     // A resume enters PLAYING too. Without the `from` check, unpausing would snap the car back
     // to the centre lane and level its bank — a teleport, mid-dodge.
     if (to === State.PLAYING && from !== State.PAUSED) this.reset();
+  }
+
+  #shatterCar() {
+    this.#crashTime = 0;
+    // The burst origin is the car's own centre of mass, not the impact point: this debris is the
+    // car coming apart, and where the obstacle was is ObstacleManager's business.
+    this.#burstOrigin.copy(this.#group.position);
+    this.#burstOrigin.y += SHATTER_ORIGIN_Y;
+    this.#shatter.emitBurst(this.#burstOrigin, SHATTER_COUNT, SHATTER_SPREAD, SHATTER_SPEED);
   }
 }

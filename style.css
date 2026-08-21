@@ -68,6 +68,29 @@ body {
   pointer-events: none;
 }
 
+/*
+ * Hold the game-over screen back for the impact beat.
+ *
+ * The crash is the one moment the game has any drama in it, and this overlay was landing on top
+ * of it: HUD reveals the screen on the same synchronous stateChanged that fires the shatter, and
+ * with 70% black plus a 5px backdrop blur the wreck, the debris and main.js's slow-motion window
+ * were all playing behind a curtain nobody could see through. A transition-delay is the least
+ * invasive fix available — the state machine, GameManager and HUD are all untouched, and the
+ * screen still appears off exactly the transition it always did, just after the beat rather than
+ * during it. Kept in step with SLOWMO_DURATION in main.js.
+ *
+ * The delay is deliberately only on the way *in*. Transition properties are read from the
+ * destination state, so the .hidden rule below zeroes it for the fade *out* — otherwise every
+ * restart would sit on a dead overlay for a third of a second before the road came back.
+ */
+#gameOverScreen {
+  transition-delay: 0.35s;
+}
+
+#gameOverScreen.hidden {
+  transition-delay: 0s;
+}
+
 /* Typography Aesthetics */
 .glow-text {
   font-size: 4rem;

@@ -47,6 +47,21 @@ body {
 }
 
 /*
+ * The tier readout, sitting under the distance rather than beside it. Deliberately quieter
+ * than the score — smaller, cooler, less bloom — because it changes five times in a run and
+ * the score changes every frame; matching them would make the HUD look like two headlines
+ * arguing. Cyan picks up the gate edges, so "SECTOR 04" and the hardware it unlocked read as
+ * the same announcement.
+ */
+.sector {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.8rem;
+  color: #00e5ff;
+  text-shadow: 0 0 8px rgba(0, 229, 255, 0.7);
+}
+
+/*
  * The mute toggle. #uiContainer sets pointer-events: none so the canvas stays
  * clickable, and #hud inherits it — this button is the first thing in the HUD that
  * has to actually be pressed, so it opts itself back in. Styled as a quieter sibling

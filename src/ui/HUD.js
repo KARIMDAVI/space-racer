@@ -32,6 +32,7 @@ export class HUD {
   #game;
   #muteButton;
   #score;
+  #sector;
   #startScreen;
   #pauseScreen;
   #gameOverScreen;
@@ -42,6 +43,7 @@ export class HUD {
   constructor(game, bus, audio) {
     this.#game = game;
     this.#score = requireElement('scoreValue');
+    this.#sector = requireElement('sectorValue');
     this.#startScreen = requireElement('startScreen');
     this.#pauseScreen = requireElement('pauseScreen');
     this.#gameOverScreen = requireElement('gameOverScreen');
@@ -68,6 +70,7 @@ export class HUD {
 
     bus.on('stateChanged', ({ to }) => this.#onStateChanged(to));
     bus.on('newHighScore', () => { this.#bestLabel.textContent = 'NEW RECORD'; });
+    bus.on('tierChanged', ({ tier }) => this.#renderSector(tier));
   }
 
   update() {
@@ -85,6 +88,16 @@ export class HUD {
     this.#muteButton.setAttribute('aria-pressed', String(muted));
   }
 
+  /**
+   * Tiers are 0-indexed because that is what indexes the tuning table; sectors are 1-indexed
+   * because "SECTOR 00" reads like an error. The conversion lives here, in the one place that
+   * shows the number to a human, rather than being baked into GameManager where it would
+   * make every other consumer subtract one.
+   */
+  #renderSector(tier) {
+    this.#sector.textContent = `SECTOR 0${tier + 1}`;
+  }
+
   #onStateChanged(to) {
     // Toggled on every transition rather than shown/hidden in two branches: PAUSED is
     // the only state this overlay belongs to, and one expression can't get out of sync
@@ -93,6 +106,9 @@ export class HUD {
 
     if (to === State.PLAYING) {
       this.#bestLabel.textContent = 'BEST';
+      // Covers the reset case GameManager deliberately does not emit for — see start().
+      // A resume re-renders the same number, which is free and keeps this branch honest.
+      this.#renderSector(this.#game.tier);
       this.#startScreen.classList.add(HIDDEN);
       this.#gameOverScreen.classList.add(HIDDEN);
       return;

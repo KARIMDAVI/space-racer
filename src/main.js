@@ -83,6 +83,9 @@ const hud = new HUD(game, bus, audio); // owns the mute button; calls into audio
 // hop is what keeps GameManager the single mutation entry point (Principle II).
 bus.on('crashed', () => game.gameOver());
 bus.on('pauseToggled', () => game.togglePause());
+// Same one-way hop as `crashed`: ObstacleManager decides a pass *was* a near miss,
+// GameManager decides what one is worth.
+bus.on('grazed', () => game.awardGraze());
 
 // Lands mid-update, inside the obstacles.update() that detected the impact, so the dilation
 // starts on the *next* frame. That is a frame of full-speed impact before the world slows,

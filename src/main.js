@@ -40,7 +40,7 @@ const input = new InputHandler(bus);
 const player = new PlayerCar(scene, bus);
 const environment = new Environment(scene);
 const obstacles = new ObstacleManager(scene, bus, player); // reads the car's hitbox once, at build time
-const pipeline = new RenderPipeline(canvas, scene, game);
+const pipeline = new RenderPipeline(canvas, scene, game, bus); // subscribes to `crashed` for camera trauma
 const hud = new HUD(game, bus);
 
 // ObstacleManager reports the impact; GameManager decides what death means. This one

@@ -185,7 +185,9 @@ export const PATTERNS = Object.freeze([
   },
   {
     id: 'splitter-open', minTier: 2, weight: 3, length: 280, orbLane: 1,
-    // clear: lane 2 clears both splitters — a splitter's halves stop one lane out from centre.
+    // clear: lane ±1 clears both splitters — a splitter's halves stop one lane out from
+    // centre and land ON lane ±2, not past it. Corrected 2026-08-21 after S7's replay
+    // harness measured lane 2 as a solid collision (-2.16); lane ±1 is what orbLane already used.
     steps: [
       { type: 'splitter', lane: -1, z: 0 },
       { type: 'splitter', lane: 1, z: 170 }

@@ -20,10 +20,22 @@
           <!-- Written by HUD off tierChanged and off the run starting; the markup value is
                only what shows for the instant before the first render. -->
           <span id="sectorValue" class="sector">SECTOR 01</span>
+          <!-- Empty and at opacity 0 until a graze or an orb fills it. HUD drives it with the
+               Web Animations API rather than a CSS class, so a second bonus arriving mid-flash
+               restarts cleanly instead of needing a forced reflow to retrigger the animation. -->
+          <span id="bonusFlash" class="bonus-flash"></span>
         </div>
         <!-- Label and aria-pressed are both written by HUD from the persisted state at
              boot; the markup value is only what shows for the instant before that. -->
         <button id="muteButton" class="hud-button" type="button" aria-pressed="false">SOUND ON</button>
+      </div>
+
+      <!-- Active power-ups. Each chip is hidden until HUD hears powerupStarted for its kind and
+           carries its own colour, so the readout is legible at a glance without reading it. -->
+      <div id="powerupBar">
+        <span id="powerupShield" class="powerup-chip shield hidden"></span>
+        <span id="powerupMagnet" class="powerup-chip magnet hidden"></span>
+        <span id="powerupHyperdrive" class="powerup-chip hyperdrive hidden"></span>
       </div>
 
       <!-- Start Screen -->

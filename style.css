@@ -62,6 +62,76 @@ body {
 }
 
 /*
+ * The bonus flash. Positioned absolutely out of the score block's flow so a "+25" appearing
+ * cannot nudge DISTANCE or SECTOR sideways — the score is written every frame and a reflow
+ * fighting it would be visible as a twitch. Opacity 0 at rest: HUD animates it up and back
+ * down, and between flashes the element is present, empty and invisible.
+ */
+.bonus-flash {
+  position: absolute;
+  left: 0;
+  top: 100%;
+  margin-top: 18px;
+  font-size: 1.1rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: #5cffd0;                 /* the orbs' own mint, so the number and its source match */
+  text-shadow: 0 0 10px rgba(92, 255, 208, 0.8);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.score-display {
+  position: relative;             /* the anchor .bonus-flash positions against */
+}
+
+/*
+ * Active power-ups, bottom-centre. Deliberately the opposite corner of the screen from the
+ * score: the score is glanced at between obstacles, while these are read in the moment a
+ * decision is being made, and stacking them together would mean one readout to parse instead
+ * of two to glance at.
+ */
+#powerupBar {
+  position: absolute;
+  bottom: 26px;
+  left: 0;
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.powerup-chip {
+  border: 1px solid currentColor;  /* one colour per chip drives border, text and glow together */
+  padding: 5px 12px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 2px;
+  background: rgba(0, 0, 0, 0.35);
+  text-shadow: 0 0 8px currentColor;
+  box-shadow: 0 0 12px -4px currentColor;
+  transition: opacity 0.2s ease;
+}
+
+/*
+ * Each chip wears its crate's colour, so the pickup on the road and the readout at the bottom
+ * of the screen are recognisably the same thing without either being labelled twice.
+ */
+.powerup-chip.shield { color: #33ddff; }
+.powerup-chip.magnet { color: #ff44aa; }
+.powerup-chip.hyperdrive { color: #ffdd22; }
+
+/*
+ * `display: none`, not the opacity fade .overlay-screen uses for the same class name. A chip
+ * is inside a flex row, and fading one out would leave its gap and its width behind — the
+ * remaining chips would sit off-centre for as long as the run lasts.
+ */
+.powerup-chip.hidden {
+  display: none;
+}
+
+/*
  * The mute toggle. #uiContainer sets pointer-events: none so the canvas stays
  * clickable, and #hud inherits it — this button is the first thing in the HUD that
  * has to actually be pressed, so it opts itself back in. Styled as a quieter sibling

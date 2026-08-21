@@ -21,6 +21,12 @@ body {
   width: 100vw;
   height: 100vh;
   z-index: 1;
+  /*
+   * Non-negotiable for touch steering. Without it the browser claims a drag for panning or
+   * pinch-zoom and stops delivering pointermove part-way through the gesture, which presents
+   * as steering that latches on and will not release — see InputHandler's header note.
+   */
+  touch-action: none;
 }
 
 /* UI Overlay Layer */

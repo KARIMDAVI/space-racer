@@ -87,6 +87,16 @@ bus.on('pauseToggled', () => game.togglePause());
 // GameManager decides what one is worth.
 bus.on('grazed', () => game.awardGraze());
 
+// The three S7 hops, all the same shape as the two above and all for the same reason: the
+// module that *detected* something reports it, and the state owner decides what it means.
+// CollectibleManager knows an orb was driven through but not that one is worth 25; it knows a
+// crate held a hyperdrive but not that one lasts four seconds; ObstacleManager knows the car
+// was hit and survived but not what paid for that. Every one of those numbers is in
+// GameManager, which is the only module that writes any of them (Principle II).
+bus.on('orbCollected', () => game.awardOrb());
+bus.on('powerupFound', ({ kind }) => game.activatePowerup(kind));
+bus.on('impactAbsorbed', () => game.absorbImpact());
+
 // Lands mid-update, inside the obstacles.update() that detected the impact, so the dilation
 // starts on the *next* frame. That is a frame of full-speed impact before the world slows,
 // which is what gives the beat something to decelerate from.

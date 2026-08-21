@@ -57,6 +57,16 @@ const CAR_HITBOX_SHRINK = 0.4;  // forgiving: the player's box is smaller than t
 const GRAZE_MARGIN = 1.2;
 
 /**
+ * What a contact turned out to be. Three outcomes rather than the boolean this used to return,
+ * because a shielded hit is neither "nothing happened" nor "the run is over" — it is an
+ * obstacle that has to leave the road immediately, and the caller is the only place that knows
+ * the index needed to retire it.
+ */
+const CONTACT_NONE = 0;
+const CONTACT_FATAL = 1;
+const CONTACT_ABSORBED = 2;
+
+/**
  * ARCHITECTURE: Analytic collision
  * Decision: compare cached half-extents on the X and Z axes with subtractions and
  *   comparisons. No Box3, no y axis, nothing allocated, nothing traversed.
@@ -180,7 +190,10 @@ export class ObstacleManager {
     const carX = this.#carObject.position.x + this.#carOffsetX;
     const carZ = this.#carObject.position.z + this.#carOffsetZ;
 
-    if (this.#advance(dt, moveDist, tuning, carX, carZ)) return; // crashed: hold the frame
+    // Resolved once per frame, not per obstacle, and read rather than reasoned about: this
+    // module asks the state owner whether an impact would be survived and never asks *why*.
+    // Which power-up is paying, and what it costs, stays entirely in GameManager (Principle II).
+    if (this.#advance(dt, moveDist, tuning, carX, carZ, game.invulnerable)) return; // crashed: hold the frame
 
     this.#schedule(dt, moveDist, game.tier, tuning, carZ);
   }
@@ -190,7 +203,7 @@ export class ObstacleManager {
    * player, in which case the caller stops — the remaining obstacles hold position and
    * nothing new is scheduled onto a road the run has already left.
    */
-  #advance(dt, moveDist, tuning, carX, carZ) {
+  #advance(dt, moveDist, tuning, carX, carZ, invulnerable) {
     for (let i = this.#active.length - 1; i >= 0; i--) {
       const record = this.#active[i];
       const { position } = record.mesh;
@@ -204,8 +217,14 @@ export class ObstacleManager {
       record.dist += travel;
       if (record.behavior) record.behavior(record, dt, tuning, carX);
 
-      if (position.z > -COLLISION_WINDOW && position.z < COLLISION_WINDOW &&
-          this.#resolveContact(record, position, carX, carZ)) return true;
+      if (position.z > -COLLISION_WINDOW && position.z < COLLISION_WINDOW) {
+        const contact = this.#resolveContact(record, position, carX, carZ, invulnerable);
+        if (contact === CONTACT_FATAL) return true;
+        // Retired on the spot rather than ghosted and left to drift past. Vanishing on contact
+        // is both the honest read — the shield destroyed it — and the fix for the alternative,
+        // which is a solid block visibly clipping through the car for the rest of its flight.
+        if (contact === CONTACT_ABSORBED) { this.#retire(i); continue; }
+      }
 
       if (position.z > DESPAWN_Z) this.#retire(i);
     }
@@ -223,7 +242,7 @@ export class ObstacleManager {
    * graze bonus (a hit ends the run before the exit ever happens), and one flag caps the
    * award at one per obstacle, so idling alongside a long wall cannot farm it.
    */
-  #resolveContact(record, position, carX, carZ) {
+  #resolveContact(record, position, carX, carZ, invulnerable) {
     const gapZ = gapOn(carZ, position.z, this.#carHalfZ, record.halfZ);
 
     // A ghosted pulse gate is scenery: no hit, and no near miss either — you cannot narrowly
@@ -231,11 +250,19 @@ export class ObstacleManager {
     if (gapZ < 0 && record.solid) {
       const gapX = gapOn(carX, position.x, this.#carHalfX, record.halfX);
       if (gapX < 0) {
+        if (invulnerable) {
+          // No payload: nothing downstream needs the impact point, and `crashed` clones its
+          // position for a camera shake that this event deliberately does not trigger. Left
+          // bare, an absorbed hit costs zero allocation — which matters, because hyperdrive
+          // can produce a run of them where a crash produces exactly one per run.
+          this.#bus.emit('impactAbsorbed');
+          return CONTACT_ABSORBED;
+        }
         this.#bus.emit('crashed', { position: position.clone() });
-        return true;
+        return CONTACT_FATAL;
       }
       if (gapX < record.minGapX) record.minGapX = gapX;
-      return false;
+      return CONTACT_NONE;
     }
 
     if (!record.grazed && record.minGapX <= GRAZE_MARGIN && position.z > carZ) {
@@ -243,7 +270,7 @@ export class ObstacleManager {
       this.#bus.emit('grazed', { gap: record.minGapX });
     }
 
-    return false;
+    return CONTACT_NONE;
   }
 
   /**
@@ -287,6 +314,15 @@ export class ObstacleManager {
     }
   }
 
+  /**
+   * Announces the pick on the bus so CollectibleManager can lay an orb line down the pattern's
+   * audited clear lane. The frozen pattern object is passed by reference and nothing is built
+   * for the event — a payload literal here would allocate a few times a second for the life of
+   * a run, which is the sort of thing Principle III is actually about.
+   *
+   * The dependency direction is deliberate: this module owns the schedule and says what it
+   * picked; it does not know collectibles exist, and nothing it does here changes if they stop.
+   */
   #nextPattern(tier) {
     this.#stepIndex = 0;
 
@@ -295,12 +331,14 @@ export class ObstacleManager {
       // pattern, and letting it launder a repeat would put the same shape either side of it.
       this.#pattern = REST;
       this.#untilRest = REST_INTERVAL_MIN + Math.floor(Math.random() * REST_INTERVAL_SPAN);
+      this.#bus.emit('patternStarted', this.#pattern);
       return;
     }
 
     this.#untilRest--;
     this.#pattern = selectPattern(tier, this.#lastId);
     this.#lastId = this.#pattern.id;
+    this.#bus.emit('patternStarted', this.#pattern);
   }
 
   /**

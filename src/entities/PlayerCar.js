@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { State } from '../core/GameManager.js';
 import { buildCar } from './CarModel.js';
+import { ShieldShell } from './ShieldShell.js';
 import { ParticleEmitter } from '../render/ParticleEmitter.js';
 
 /**
@@ -112,6 +113,7 @@ export class PlayerCar {
   #underglow;
   #thruster;
   #shatter;
+  #shield;
   #hitbox;
   #crashing = false;
   #steerable = false;
@@ -130,12 +132,27 @@ export class PlayerCar {
 
     this.#thruster = new ParticleEmitter(scene, THRUSTER);
     this.#shatter = new ParticleEmitter(scene, SHATTER);
+    this.#shield = new ShieldShell(scene);
 
     this.reset();
     // Measured after reset and before the first frame, while rotation is still zero. Steering
     // banks the car, and a bank would inflate the measurement into the lean.
     this.#hitbox = measureHitbox(this.#group);
     bus.on('stateChanged', ({ from, to }) => this.#onStateChanged(from, to));
+
+    /**
+     * ADR (Principle II): the shield's *visual* is driven by the two events, never by this file
+     * keeping its own timer. PlayerCar does not know how long a shield lasts and has no field
+     * saying whether one is up — GameManager owns both, and the pair of handlers below is the
+     * whole of what this module knows about power-ups. The shell's own `raise`/`drop` are
+     * idempotent, which is what makes a re-fired `powerupStarted` (a refresh) harmless.
+     *
+     * `broken` is the only payload either handler reads, and it is the difference between the
+     * shell popping and the shell dissolving — a distinction only GameManager can make, since
+     * only it knows whether an impact or the clock ended it.
+     */
+    bus.on('powerupStarted', ({ kind }) => { if (kind === 'shield') this.#shield.raise(); });
+    bus.on('powerupEnded', ({ kind, broken }) => { if (kind === 'shield') this.#shield.drop(broken); });
   }
 
   /** The car's scene node. Read-only handle — ObstacleManager reads its position. */
@@ -161,6 +178,10 @@ export class PlayerCar {
     // A fast restart would otherwise inherit the previous run's debris hanging in mid-air.
     this.#shatter.clear();
     this.#thruster.clear();
+    // Belt-and-braces against GameManager, which already ends every power-up on game-over: if
+    // that ordering ever changes, a stale bubble following the car through a fresh run is a
+    // very confusing bug to look at.
+    this.#shield.clear();
   }
 
   /**
@@ -179,6 +200,10 @@ export class PlayerCar {
     this.#feedThruster(speed);
     this.#thruster.update(dt);
     this.#shatter.update(dt);
+    // Handed the car's position rather than reading it back off a parent transform — see the
+    // unparenting note in ShieldShell. Last, so it follows where the car actually ended up
+    // this frame instead of trailing it by one.
+    this.#shield.update(dt, this.#group.position);
     this.#underglow.position.x = this.#group.position.x;
   }
 

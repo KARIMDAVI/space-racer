@@ -101,6 +101,21 @@ const UI_CLICK = { fromHz: 900, toHz: 450, level: 0.22, decay: 0.09 };
 const UI_HOVER = { fromHz: 1400, level: 0.07, decay: 0.05 };
 
 /**
+ * --- Pickups. Both sweep *upward*, which is the whole design: every existing one-shot in this
+ * file falls (the UI click drops an octave, the crash dives), so a rising blip is unambiguously
+ * a good thing without the player having to learn it.
+ *
+ * The orb is a triangle rather than the UI's square — fewer odd harmonics, so it sits under the
+ * engine instead of cutting across it. It fires several times in a few seconds when a line is
+ * collected, and a square wave at that rate is a woodpecker. Kept quiet for the same reason.
+ *
+ * The crate is louder, longer and sweeps further, because it happens roughly once every thirty
+ * seconds and is the one pickup worth interrupting the mix for.
+ */
+const ORB_PICKUP = { type: 'triangle', fromHz: 880, toHz: 1620, level: 0.15, decay: 0.11 };
+const CRATE_PICKUP = { type: 'triangle', fromHz: 520, toHz: 2100, level: 0.3, decay: 0.32 };
+
+/**
  * ADR (Principle V — "complete, not a TODO", measured rather than assumed): the music
  * slot is resolved at *build* time, not probed at runtime.
  *
@@ -153,6 +168,13 @@ export class AudioManager {
     // note holds. Nothing here touches Web Audio until a gesture arrives; the handler
     // no-ops on a null context.
     bus.on('crashed', () => this.#crash());
+
+    // Exactly what voices.js predicted these would cost: "one bus.on and one call to playBlip
+    // with different numbers". No new synthesis, no new lifecycle. #pickup no-ops before a
+    // context exists, which is every event fired before the start button is pressed — and
+    // there are none, since a pickup requires a run.
+    bus.on('orbCollected', () => this.#pickup(ORB_PICKUP));
+    bus.on('powerupFound', () => this.#pickup(CRATE_PICKUP));
   }
 
   get muted() { return this.#muted; }
@@ -227,6 +249,16 @@ export class AudioManager {
     sub.frequency.setTargetAtTime(hz * ENGINE_SUB_RATIO, now, ENGINE_GLIDE);
     filter.frequency.setTargetAtTime(ENGINE_CUTOFF_BASE + speed * ENGINE_CUTOFF_PER_SPEED, now, ENGINE_GLIDE);
     gain.gain.setTargetAtTime(speed > 0 ? ENGINE_GAIN : 0, now, ENGINE_FADE);
+  }
+
+  /**
+   * A collectible sound. Never opens the context — unlike `ui('click')`, a pickup carries no
+   * user activation, and a context created here would be born suspended with Chrome's autoplay
+   * warning attached. By the time any pickup can happen the start button has already opened it.
+   */
+  #pickup(voice) {
+    if (!this.#ctx) return;
+    playBlip(this.#ctx, this.#sfx, voice);
   }
 
   /**

@@ -96,19 +96,56 @@ const buildCar = () => {
   return car;
 };
 
+/**
+ * The car's footprint, measured once from the assembled mesh in its rest pose.
+ * Principle III: the alternative is `Box3.setFromObject` every frame, which walks
+ * all ~20 meshes in the group to rediscover numbers that cannot change.
+ *
+ * Reported as half-extents plus the offset of the box centre from the group origin,
+ * because the car is *not* centred on its own origin — the nose reaches 2.71 units
+ * forward while the tail reaches 2.40 back, putting the box centre ~0.16 ahead of
+ * `position.z`. A collision test that assumed `position` was the centre would sit
+ * the hitbox 0.16 units too far back, which is small enough to look like bad luck
+ * rather than a bug.
+ */
+const measureHitbox = (car) => {
+  const box = new THREE.Box3().setFromObject(car);
+  const centre = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+
+  return Object.freeze({
+    halfX: size.x / 2,
+    halfZ: size.z / 2,
+    offsetX: centre.x - car.position.x,
+    offsetZ: centre.z - car.position.z
+  });
+};
+
 export class PlayerCar {
   #group;
+  #hitbox;
   #crashing = false;
   #steerable = false;
 
   constructor(scene, bus) {
     this.#group = buildCar();
     scene.add(this.#group);
+    // Measured before the first frame, while rotation is still zero. Steering banks
+    // the car, and a bank would inflate the measurement into the lean.
+    this.#hitbox = measureHitbox(this.#group);
     bus.on('stateChanged', ({ to }) => this.#onStateChanged(to));
   }
 
-  /** The car's scene node. Read-only handle — ObstacleManager bounds-tests against it. */
+  /** The car's scene node. Read-only handle — ObstacleManager reads its position. */
   get object3d() { return this.#group; }
+
+  /**
+   * Frozen `{ halfX, halfZ, offsetX, offsetZ }` in world units, relative to
+   * `object3d.position`. The collision *feel* constants are not applied here —
+   * this is the car's true size, and ObstacleManager owns how forgiving to be
+   * about it.
+   */
+  get hitbox() { return this.#hitbox; }
 
   reset() {
     this.#group.position.set(START_X, START_Y, START_Z);

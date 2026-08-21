@@ -39,7 +39,7 @@ const game = new GameManager(bus, persistence);
 const input = new InputHandler();
 const player = new PlayerCar(scene, bus);
 const environment = new Environment(scene);
-const obstacles = new ObstacleManager(scene, bus);
+const obstacles = new ObstacleManager(scene, bus, player); // reads the car's hitbox once, at build time
 const pipeline = new RenderPipeline(canvas, scene, game);
 const hud = new HUD(game, bus);
 
@@ -58,7 +58,7 @@ function tick() {
   game.update(dt);                    // advances score/speed; everything below reads them
   player.update(dt, input.steerAxis, game.speed);
   environment.update(dt, game);
-  obstacles.update(dt, game, player); // may emit `crashed`, which lands synchronously
+  obstacles.update(dt, game);         // may emit `crashed`, which lands synchronously
   hud.update();
   pipeline.render(dt);
 }

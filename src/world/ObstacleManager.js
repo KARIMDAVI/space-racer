@@ -52,6 +52,8 @@ const MIN_SPAWN_DELAY = 0.3;
 const SPAWN_DELAY_BASE = 1.5;
 const SPAWN_DELAY_PER_SPEED = 0.2;
 const CAR_HITBOX_SHRINK = 0.4;  // forgiving: the player's box is smaller than the car
+// Must stay under 0.5 — that is the wall's half-depth, and a shrink past it drives
+// halfZ negative, which silently makes walls impossible to hit rather than erroring.
 const OBSTACLE_HITBOX_SHRINK = 0.2;
 
 /**
@@ -72,6 +74,31 @@ const OBSTACLE_TYPES = [
   { width: 2, height: 2, depth: 2 }, // block
   { width: 8, height: 2, depth: 1 }  // wide wall
 ];
+
+/**
+ * ARCHITECTURE: Analytic collision
+ * Decision: compare cached half-extents on the X and Z axes with four subtractions
+ *   and two comparisons. No Box3, no y axis, nothing allocated, nothing traversed.
+ * Reason: Principle III. `Box3.setFromObject` allocated nothing per call here (the
+ *   boxes were scratch fields) but it *walked the car's entire mesh hierarchy* every
+ *   frame — ~20 meshes, each transforming 8 corners — to recompute a shape that only
+ *   ever translates along x.
+ * Trade-off: the car's box no longer grows when the car banks. Measured, the old
+ *   per-frame box at full lean (roll 0.3, yaw 0.1) spanned x -1.400..1.145 where the
+ *   fixed box spans ±1.06 — so a hard turn used to widen the hitbox by up to 0.34
+ *   units on the leading side. Fixed extents are the standard choice precisely
+ *   because a hitbox that inflates when the *model* leans is a rendering artefact
+ *   leaking into physics; the change makes mid-turn collisions marginally more
+ *   forgiving and nothing else. Rejected the alternative — rebuilding the rotated
+ *   AABB analytically each frame — as paying real complexity to preserve a quirk.
+ * Dropping the y axis is exact, not an approximation: every obstacle's shrunk box
+ *   spans y -1.30..0.30 and the car's spans -0.60..-0.15, strictly inside it, in
+ *   every state. The y axis can never be the separating one, so testing it can
+ *   never change an answer. If obstacles ever leave that height band — a Phase 3
+ *   flying or ground-hugging type — this assumption dies and y comes back.
+ */
+const overlapsXZ = (px, pz, phx, phz, ox, oz, ohx, ohz) =>
+  Math.abs(px - ox) < phx + ohx && Math.abs(pz - oz) < phz + ohz;
 
 /** Returns a mesh to its own free list. The record carries the list, so this is O(1). */
 const release = (record) => {
@@ -95,7 +122,16 @@ const buildPool = (scene, { width, height, depth }, body, edge) => {
     mesh.position.set(0, SPAWN_Y, SPAWN_Z);
     mesh.visible = false;
     scene.add(mesh); // the only scene.add in this file, and it runs POOL_SIZE times total
-    pool.push({ mesh, pool });
+
+    // Half-extents are a property of the *type*, not the instance: obstacles only
+    // ever translate along z, so these are correct for the mesh's whole lifetime.
+    // The shrink is baked in here so the per-frame test is pure comparison.
+    pool.push({
+      mesh,
+      pool,
+      halfX: width / 2 - OBSTACLE_HITBOX_SHRINK,
+      halfZ: depth / 2 - OBSTACLE_HITBOX_SHRINK
+    });
   }
 
   return pool;
@@ -108,13 +144,24 @@ export class ObstacleManager {
   #spawnTimer = 0;
   #warnedExhausted = false;
 
-  // Scratch bounds reused every frame. Principle III: `new THREE.Box3()` twice per
-  // frame is 120 short-lived objects a second handed to the GC for no reason.
-  #carBox = new THREE.Box3();
-  #obstacleBox = new THREE.Box3();
+  // The car's scene node and its pre-shrunk hitbox, resolved once. Held rather than
+  // passed per frame because the hitbox has to be cached somewhere, and caching it
+  // here keeps both forgiveness constants in the file that tunes collision feel.
+  #carObject;
+  #carHalfX;
+  #carHalfZ;
+  #carOffsetX;
+  #carOffsetZ;
 
-  constructor(scene, bus) {
+  constructor(scene, bus, player) {
     this.#bus = bus;
+
+    const { halfX, halfZ, offsetX, offsetZ } = player.hitbox;
+    this.#carObject = player.object3d;
+    this.#carHalfX = halfX - CAR_HITBOX_SHRINK;
+    this.#carHalfZ = halfZ - CAR_HITBOX_SHRINK;
+    this.#carOffsetX = offsetX;
+    this.#carOffsetZ = offsetZ;
 
     // One material pair for every obstacle in the game. The old code built a fresh
     // pair per spawn from identical arguments, so sharing them is pixel-identical
@@ -138,7 +185,7 @@ export class ObstacleManager {
     // gate is "identical", so it is preserved rather than quietly corrected.
   }
 
-  update(dt, game, player) {
+  update(dt, game) {
     if (game.state !== State.PLAYING) return;
 
     this.#spawnTimer += dt;
@@ -148,27 +195,25 @@ export class ObstacleManager {
       this.#spawnTimer = 0;
     }
 
-    // Computed once per frame, not once per obstacle — the car doesn't move between
-    // tests, and setFromObject walks the whole car hierarchy.
-    const carBox = this.#carBox.setFromObject(player.object3d).expandByScalar(-CAR_HITBOX_SHRINK);
+    // Resolved once per frame, not once per obstacle — the car cannot move between
+    // two tests in the same frame.
+    const carX = this.#carObject.position.x + this.#carOffsetX;
+    const carZ = this.#carObject.position.z + this.#carOffsetZ;
     const { moveDist } = game;
 
     for (let i = this.#active.length - 1; i >= 0; i--) {
-      const { mesh } = this.#active[i];
-      mesh.position.z += moveDist;
+      const record = this.#active[i];
+      const { position } = record.mesh;
+      position.z += moveDist;
 
-      if (mesh.position.z > -COLLISION_WINDOW && mesh.position.z < COLLISION_WINDOW) {
-        const obstacleBox = this.#obstacleBox
-          .setFromObject(mesh)
-          .expandByScalar(-OBSTACLE_HITBOX_SHRINK);
-
-        if (carBox.intersectsBox(obstacleBox)) {
-          this.#bus.emit('crashed', { position: mesh.position.clone() });
-          break; // remaining obstacles hold position this frame, exactly as before
-        }
+      if (position.z > -COLLISION_WINDOW && position.z < COLLISION_WINDOW &&
+          overlapsXZ(carX, carZ, this.#carHalfX, this.#carHalfZ,
+            position.x, position.z, record.halfX, record.halfZ)) {
+        this.#bus.emit('crashed', { position: position.clone() });
+        break; // remaining obstacles hold position this frame, exactly as before
       }
 
-      if (mesh.position.z > DESPAWN_Z) this.#retire(i);
+      if (position.z > DESPAWN_Z) this.#retire(i);
     }
   }
 

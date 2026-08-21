@@ -11,9 +11,9 @@ import { POWERUP_KINDS, State } from '../core/GameManager.js';
  *   UI ended up owning gameplay.
  *   The mute button follows the same rule against AudioManager: HUD calls `ui()` and
  *   `toggleMute()` and reads `muted`, and knows nothing about contexts or gain nodes.
- * Trade-off: a per-frame textContent write is a layout-invalidating touch at 60Hz.
- *   Measured cost is small because the string usually doesn't change between
- *   frames, but throttling it is a known perf item for later.
+ * Trade-off: the live score is a DOM write on a clock, so the number a player reads
+ *   can be up to SCORE_WRITE_INTERVAL_MS stale. See the ADR on that constant — the
+ *   per-frame version this replaced cost a full style recalc and layout every frame.
  * If a screen never appears, check: 1) the id in index.html still matches the
  *   lookup below — a null here fails loudly at boot, which is deliberate, 2) the
  *   `hidden` class is still what style.css keys the fade off.
@@ -40,6 +40,30 @@ const BONUS_KEYFRAMES = [
 ];
 const BONUS_TIMING = Object.freeze({ duration: 750, easing: 'ease-out' });
 
+/**
+ * ADR (Principle III): the live score readout is written at most once per this interval,
+ * and then only when the integer it displays actually changed.
+ *
+ * Measured, because the pre-existing note here called the cost "small" without having
+ * measured it and deferred the fix. Chrome trace, `disabled-by-default-devtools.timeline`,
+ * 6x CPU throttle, 8s window at tier 5 with hyperdrive up: the per-frame write produced
+ * 961 UpdateLayoutTree and 961 Layout events across 960 frames — one full style recalc and
+ * one full layout every frame, 639ms of the 8000ms window, ~8% of wall clock. The menu,
+ * where this same update() early-returns, produced *zero* of either. `textContent` replaces
+ * the element's text node whether or not the string differs, so the invalidation was
+ * unconditional and the "usually doesn't change" reasoning did not hold.
+ *
+ * 100ms is chosen against what the number is for, not against the frame rate. The score is
+ * a readout a human glances at; at tier-5 speed it climbs ~120/s, so 10Hz still moves it
+ * every tick and no player can read faster than that. Going to per-frame buys no
+ * information and costs a layout; going much slower starts to look frozen.
+ *
+ * Wall clock rather than the simulation delta on purpose: this is a property of how often a
+ * human can read a number, so it should not dilate with the crash slow-motion the tick
+ * applies, and update() does not run while paused so a pause cannot bank interval either.
+ */
+const SCORE_WRITE_INTERVAL_MS = 100;
+
 /** Chip labels. Uppercase in the markup would be a second place to change one. */
 const POWERUP_LABELS = Object.freeze({
   shield: 'SHIELD', magnet: 'MAGNET', hyperdrive: 'HYPERDRIVE'
@@ -65,6 +89,10 @@ export class HUD {
   #bestScore;
   #bonus;
   #bonusAnimation = null;
+
+  /** Last integer written to the score element, and when the next write is allowed. */
+  #scoreShown = -1;
+  #nextScoreWrite = 0;
 
   /** One element and one last-written integer per kind, both resolved once. */
   #chips = {};
@@ -123,15 +151,34 @@ export class HUD {
 
   update() {
     if (this.#game.state !== State.PLAYING) return;
-    this.#score.textContent = Math.floor(this.#game.score);
+    this.#updateScore();
     this.#updateChips();
   }
 
   /**
-   * A countdown that only writes when the whole second changes. The score above writes every
-   * frame and this file's header already flags that as a known cost; adding three more
-   * per-frame textContent writes for a number that visibly changes once a second would be
-   * taking that cost four times over for no extra information.
+   * Fixed: the score was written to the DOM every frame, which forced a style recalc and a
+   * full layout every frame (measured: 1.00 of each per frame during play, 0 on the menu).
+   * Gated on a 10Hz clock first and on the value second — the clock is what removes the
+   * per-frame layout, and the value check is what keeps a stalled score from writing at all.
+   */
+  #updateScore() {
+    const now = performance.now();
+    if (now < this.#nextScoreWrite) return;
+    // Advanced before the value check, so a score that is not moving re-arms the clock
+    // rather than re-testing itself on every frame until it does.
+    this.#nextScoreWrite = now + SCORE_WRITE_INTERVAL_MS;
+
+    const value = Math.floor(this.#game.score);
+    if (value === this.#scoreShown) return;
+    this.#scoreShown = value;
+    this.#score.textContent = value;
+  }
+
+  /**
+   * A countdown that only writes when the whole second changes — the same discipline
+   * #updateScore now applies, arrived at here first. Three more per-frame textContent writes
+   * for a number that visibly changes once a second would have bought no extra information
+   * at four times the layout cost the score alone was measured to carry.
    */
   #updateChips() {
     const { powerups } = this.#game;
@@ -185,6 +232,11 @@ export class HUD {
     this.#pauseScreen.classList.toggle(HIDDEN, to !== State.PAUSED);
 
     if (to === State.PLAYING) {
+      // Re-arm the score throttle so a new run's 0 lands on the first frame instead of up
+      // to SCORE_WRITE_INTERVAL_MS into it, still showing the last run's final number.
+      // A resume passes through here too and simply forces one harmless write.
+      this.#scoreShown = -1;
+      this.#nextScoreWrite = 0;
       this.#bestLabel.textContent = 'BEST';
       // Covers the reset case GameManager deliberately does not emit for — see start().
       // A resume re-renders the same number, which is free and keeps this branch honest.
@@ -195,7 +247,14 @@ export class HUD {
     }
 
     if (to === State.GAME_OVER) {
-      this.#finalScore.textContent = Math.floor(this.#game.score);
+      const final = Math.floor(this.#game.score);
+      // Settle the live readout on the true final number. update() stops running at this
+      // transition, so without this the throttled score could sit up to
+      // SCORE_WRITE_INTERVAL_MS stale and disagree with the panel in front of it — the
+      // overlay is translucent, so both numbers are on screen together.
+      this.#score.textContent = final;
+      this.#scoreShown = final;
+      this.#finalScore.textContent = final;
       // GameManager persists the record before announcing the transition, so this
       // read is already current — see the ordering note in gameOver().
       this.#bestScore.textContent = this.#game.highScore;

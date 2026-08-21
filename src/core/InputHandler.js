@@ -17,13 +17,18 @@
 // physical KeyA sits elsewhere.
 const isLeftKey = (e) => e.code === 'ArrowLeft' || e.key === 'a' || e.key === 'A';
 const isRightKey = (e) => e.code === 'ArrowRight' || e.key === 'd' || e.key === 'D';
+// One check is enough here where the steering keys need two: Escape reports the same
+// `code` on every keyboard layout, because it isn't a character key.
+const isPauseKey = (e) => e.code === 'Escape';
 
 export class InputHandler {
+  #bus;
   #left = false;
   #right = false;
 
-  constructor() {
-    window.addEventListener('keydown', (e) => this.#setKey(e, true));
+  constructor(bus) {
+    this.#bus = bus;
+    window.addEventListener('keydown', (e) => this.#onKeyDown(e));
     window.addEventListener('keyup', (e) => this.#setKey(e, false));
   }
 
@@ -38,6 +43,21 @@ export class InputHandler {
    * inside this file, not a change to main.js's loop.
    */
   update() {}
+
+  /**
+   * `pauseToggled` is an intent, not a command: this module says the player asked to
+   * pause, and GameManager decides whether that's legal from the current state
+   * (Principle II). It stays an intent for the same reason `crashed` does.
+   */
+  #onKeyDown(event) {
+    // Held keys auto-repeat keydown ~30x/sec. Steering doesn't care — every repeat
+    // re-sets a boolean that's already true — but a toggle would strobe, so the
+    // guard covers the whole handler rather than just the pause branch.
+    if (event.repeat) return;
+
+    if (isPauseKey(event)) this.#bus.emit('pauseToggled');
+    else this.#setKey(event, true);
+  }
 
   #setKey(event, pressed) {
     if (isLeftKey(event)) this.#left = pressed;

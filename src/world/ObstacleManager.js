@@ -171,8 +171,10 @@ export class ObstacleManager {
 
     for (const type of OBSTACLE_TYPES) this.#pools.push(buildPool(scene, type, body, edge));
 
-    bus.on('stateChanged', ({ to }) => {
-      if (to === State.PLAYING) this.reset();
+    bus.on('stateChanged', ({ from, to }) => {
+      // A resume enters PLAYING too, and reset() returns every live obstacle to the
+      // pool — unpausing would clear the road the player was in the middle of dodging.
+      if (to === State.PLAYING && from !== State.PAUSED) this.reset();
     });
   }
 

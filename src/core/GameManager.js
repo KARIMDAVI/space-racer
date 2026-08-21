@@ -13,10 +13,10 @@
  *   silent rather than re-emitting.
  */
 /**
- * The four states from the Blueprint's Phase 1 state machine. PAUSED has no
- * trigger wired yet — that arrives with the visibility/touch work — but it is not
- * a placeholder: update() gates on PLAYING, so entering PAUSED already freezes the
- * whole simulation correctly the moment something calls for it.
+ * The four states from the Blueprint's Phase 1 state machine. PAUSED is reached
+ * through pause()/resume() below, driven by the Escape key and by the tab losing
+ * visibility; main.js skips the whole simulation block while it holds, and keeps
+ * rendering so a paused frame shows the frozen scene rather than black.
  */
 export const State = Object.freeze({
   MENU: 'MENU',
@@ -50,6 +50,13 @@ export class GameManager {
   get speed() { return this.#speed; }
 
   /**
+   * Asked once per frame by the tick. A getter rather than main.js comparing against
+   * State keeps the composition root free of state-machine vocabulary — it needs to
+   * know whether to run the simulation, not which enum member is current.
+   */
+  get isPaused() { return this.#state === State.PAUSED; }
+
+  /**
    * World units travelled this frame. Environment and ObstacleManager both need it,
    * and both deriving `speed * 100 * dt` independently would put the multiplier in
    * two places waiting to drift apart. Owned here, read there.
@@ -65,6 +72,31 @@ export class GameManager {
     this.#speed = BASE_SPEED;
     this.#moveDist = 0;
     this.#transition(State.PLAYING);
+  }
+
+  /**
+   * ADR (Principle II): pause is a *state transition and nothing else*. It is
+   * deliberately not implemented as "set speed to 0", which is what gameOver() does
+   * and what the pre-split build would have reached for. Zeroing speed would round
+   * the score's growth to nothing, hand Environment and ObstacleManager a moveDist
+   * of 0 that they cannot distinguish from a dead stop, and leave nothing to restore
+   * on resume — the run's momentum would have to be reconstructed from the score.
+   * Freezing the *tick* instead leaves every value exactly where it was.
+   */
+  pause() {
+    if (this.#state !== State.PLAYING) return; // nothing to freeze in a menu
+    this.#transition(State.PAUSED);
+  }
+
+  resume() {
+    if (this.#state !== State.PAUSED) return;
+    this.#transition(State.PLAYING);
+  }
+
+  /** The shape a single key wants. Both halves still go through the guards above. */
+  togglePause() {
+    if (this.#state === State.PLAYING) this.pause();
+    else if (this.#state === State.PAUSED) this.resume();
   }
 
   gameOver() {

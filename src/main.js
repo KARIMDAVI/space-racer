@@ -36,7 +36,7 @@ scene.fog = new THREE.FogExp2(0x000000, 0.015); // deep space — also hides the
 const bus = new EventBus();
 const persistence = new PersistenceService();
 const game = new GameManager(bus, persistence);
-const input = new InputHandler();
+const input = new InputHandler(bus);
 const player = new PlayerCar(scene, bus);
 const environment = new Environment(scene);
 const obstacles = new ObstacleManager(scene, bus, player); // reads the car's hitbox once, at build time
@@ -46,20 +46,42 @@ const hud = new HUD(game, bus);
 // ObstacleManager reports the impact; GameManager decides what death means. This one
 // hop is what keeps GameManager the single mutation entry point (Principle II).
 bus.on('crashed', () => game.gameOver());
+bus.on('pauseToggled', () => game.togglePause());
+
+// Auto-pause on a lost tab, and deliberately no auto-resume on return: rAF stops
+// while hidden, so an automatic resume would drop the player straight back into a
+// live run they aren't looking at yet. Coming back to a paused frame is the kind
+// thing to do. game.pause() is a no-op outside PLAYING, so the menu is unaffected.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) game.pause();
+});
 
 const clock = new THREE.Clock();
 
 function tick() {
   requestAnimationFrame(tick);
 
+  // Read the clock every frame, paused or not. getDelta() measures since its own last
+  // call, so skipping it while paused would bank the entire pause into the first
+  // resumed frame and jump the world forward by it (up to the clamp, every time).
   const dt = Math.min(clock.getDelta(), MAX_FRAME_DELTA);
 
+  // Device polling stays live while paused — it's what receives the key that unpauses.
   input.update();
-  game.update(dt);                    // advances score/speed; everything below reads them
-  player.update(dt, input.steerAxis, game.speed);
-  environment.update(dt, game);
-  obstacles.update(dt, game);         // may emit `crashed`, which lands synchronously
-  hud.update();
+
+  // Pause freezes the simulation by not running it. Each module below already gates
+  // on PLAYING internally, so this is belt-and-braces for all but Environment's star
+  // drift; it earns its place by making "paused means nothing advances" a single
+  // readable fact rather than a property emerging from five separate early returns.
+  if (!game.isPaused) {
+    game.update(dt);                  // advances score/speed; everything below reads them
+    player.update(dt, input.steerAxis, game.speed);
+    environment.update(dt, game);
+    obstacles.update(dt, game);       // may emit `crashed`, which lands synchronously
+    hud.update();
+  }
+
+  // Outside the gate on purpose: a paused frame shows the frozen scene, not black.
   pipeline.render(dt);
 }
 

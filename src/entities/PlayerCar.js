@@ -133,7 +133,7 @@ export class PlayerCar {
     // Measured before the first frame, while rotation is still zero. Steering banks
     // the car, and a bank would inflate the measurement into the lean.
     this.#hitbox = measureHitbox(this.#group);
-    bus.on('stateChanged', ({ to }) => this.#onStateChanged(to));
+    bus.on('stateChanged', ({ from, to }) => this.#onStateChanged(from, to));
   }
 
   /** The car's scene node. Read-only handle — ObstacleManager reads its position. */
@@ -191,9 +191,11 @@ export class PlayerCar {
    * duplicating it. They select an animation mode — they are never read as the
    * answer to "is the game over?", and nothing outside this file can see them.
    */
-  #onStateChanged(to) {
+  #onStateChanged(from, to) {
     this.#crashing = to === State.GAME_OVER;
     this.#steerable = to === State.PLAYING;
-    if (to === State.PLAYING) this.reset();
+    // A resume enters PLAYING too. Without the `from` check, unpausing would snap the
+    // car back to the centre lane and level its bank — a teleport, mid-dodge.
+    if (to === State.PLAYING && from !== State.PAUSED) this.reset();
   }
 }

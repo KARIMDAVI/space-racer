@@ -30,6 +30,7 @@ export class HUD {
   #game;
   #score;
   #startScreen;
+  #pauseScreen;
   #gameOverScreen;
   #finalScore;
   #bestLabel;
@@ -39,6 +40,7 @@ export class HUD {
     this.#game = game;
     this.#score = requireElement('scoreValue');
     this.#startScreen = requireElement('startScreen');
+    this.#pauseScreen = requireElement('pauseScreen');
     this.#gameOverScreen = requireElement('gameOverScreen');
     this.#finalScore = requireElement('finalScore');
     this.#bestLabel = requireElement('bestLabel');
@@ -57,6 +59,11 @@ export class HUD {
   }
 
   #onStateChanged(to) {
+    // Toggled on every transition rather than shown/hidden in two branches: PAUSED is
+    // the only state this overlay belongs to, and one expression can't get out of sync
+    // with itself the way a matched pair of add/remove calls eventually does.
+    this.#pauseScreen.classList.toggle(HIDDEN, to !== State.PAUSED);
+
     if (to === State.PLAYING) {
       this.#bestLabel.textContent = 'BEST';
       this.#startScreen.classList.add(HIDDEN);

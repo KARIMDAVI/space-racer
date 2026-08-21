@@ -1,23 +1,24 @@
 import * as THREE from 'three';
 import { State } from '../core/GameManager.js';
+import { buildCar } from './CarModel.js';
 
 /**
  * ARCHITECTURE: The player's car
- * Decision: this module owns the car's Group, every mesh inside it, the headlight
- *   PointLight parented to it, and all of its motion.
- * Reason: Ownership Map gives Environment "lighting", but the car's rim light is a
- *   *child of the car group*. Handing it to Environment would mean Environment
- *   reaching into PlayerCar's Group to attach it — the exact internals-poking
- *   Principle I forbids. Ambient and directional light stay with Environment; the
- *   light that travels with the car belongs to the car.
- * Trade-off: "all lighting lives in one file" is no longer literally true. Grep
- *   for `Light` finds two places instead of one. Worth it for a car that can be
- *   added to any scene and still look right.
+ * Decision: this module owns the car's Group, the light pool under it, its measured hitbox and
+ *   all of its motion. The meshes themselves are assembled by CarModel.js, which this file is
+ *   the only caller of.
+ * Reason: Ownership Map gives Environment "lighting", but the car's rim light is a *child of
+ *   the car group*, and the light pool is placed from this file every frame. Handing either to
+ *   Environment would mean Environment reaching into PlayerCar's state to move them — the exact
+ *   internals-poking Principle I forbids.
+ * Trade-off: "all lighting lives in one file" is no longer literally true. Grep for `Light`
+ *   finds two places instead of one. Worth it for a car that can be added to any scene and
+ *   still look right.
  */
 
 const CAR_SPEED_X = 20;   // lateral units/sec — deliberately unrelated to forward speed
 const X_LIMIT = 8;        // road edge
-const BANK_LERP = 0.1;    // per-frame, NOT dt-scaled: see update()
+const BANK_LERP = 0.1;    // per-frame, NOT dt-scaled: see #drive()
 const BANK_ROLL = 0.3;
 const BANK_YAW = 0.1;
 const CRASH_SPIN = 5;     // rad/sec tumble
@@ -26,87 +27,32 @@ const START_X = 0;
 const START_Y = -1;
 const START_Z = 0;
 
-const boxAt = (w, h, d, material, x, y, z) => {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
-  mesh.position.set(x, y, z);
-  return mesh;
-};
+const UNDERGLOW_Y = 0.04; // above the wheel contact plane, clear of the road surface
 
-/** Tron-style outline: an EdgesGeometry twin sharing the source mesh's transform. */
-const outline = (mesh, material) => {
-  const line = new THREE.LineSegments(new THREE.EdgesGeometry(mesh.geometry), material);
-  line.position.copy(mesh.position);
-  line.rotation.copy(mesh.rotation);
-  return line;
-};
-
-const buildCar = () => {
-  const car = new THREE.Group();
-
-  const bodyMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.2, metalness: 0.8 });
-  const glassMat = new THREE.MeshStandardMaterial({
-    color: 0xffddaa, roughness: 0.1, metalness: 0.9, emissive: 0xff8800, emissiveIntensity: 0.6
-  });
-  const neonMat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
-  const lineMat = new THREE.LineBasicMaterial({ color: 0xff8800, linewidth: 2 });
-  const tireMat = new THREE.MeshStandardMaterial({ color: 0x050505, roughness: 0.9 });
-
-  const chassis = boxAt(2.2, 0.4, 4.6, bodyMat, 0, 0.3, 0);
-  const hood = boxAt(2.0, 0.3, 1.8, bodyMat, 0, 0.45, -1.8);
-  hood.rotation.x = Math.PI / 16; // set before outlining — the edge twin copies it
-  const cabin = boxAt(1.6, 0.5, 2.0, bodyMat, 0, 0.75, 0.2);
-  const spoilerWing = boxAt(2.4, 0.1, 0.6, bodyMat, 0, 1.2, 2.1);
-
-  const windshield = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.2), glassMat);
-  windshield.position.set(0, 0.78, -0.65);
-  windshield.rotation.x = -Math.PI / 3.5;
-
-  for (const part of [chassis, hood, cabin]) car.add(part, outline(part, lineMat));
-  car.add(windshield); // no outline: the emissive material is the effect
-  car.add(spoilerWing, outline(spoilerWing, lineMat));
-
-  car.add(boxAt(0.1, 0.5, 0.2, bodyMat, -0.8, 0.95, 2.0)); // spoiler struts
-  car.add(boxAt(0.1, 0.5, 0.2, bodyMat, 0.8, 0.95, 2.0));
-
-  // Wheel geometry is shared across all four — four Meshes, one BufferGeometry each.
-  const tireGeo = new THREE.CylinderGeometry(0.45, 0.45, 0.3, 24);
-  const rimGeo = new THREE.TorusGeometry(0.28, 0.05, 12, 24);
-  for (const [x, z] of [[-1.25, -1.5], [1.25, -1.5], [-1.25, 1.6], [1.25, 1.6]]) {
-    const wheel = new THREE.Group();
-    const tire = new THREE.Mesh(tireGeo, tireMat);
-    tire.rotation.z = Math.PI / 2;
-    const rim = new THREE.Mesh(rimGeo, neonMat);
-    rim.rotation.y = Math.PI / 2;
-    rim.position.x = x > 0 ? 0.16 : -0.16; // push the glowing rim to the outboard face
-    wheel.add(tire, rim);
-    wheel.position.set(x, 0.45, z);
-    car.add(wheel);
-  }
-
-  car.add(boxAt(0.6, 0.05, 0.05, neonMat, -0.7, 0.4, -2.65)); // headlight slits
-  car.add(boxAt(0.6, 0.05, 0.05, neonMat, 0.7, 0.4, -2.65));
-  car.add(boxAt(1.8, 0.2, 0.1, neonMat, 0, 0.5, 2.3));        // rear thruster bar
-
-  // Travels with the car so it stays lit against the near-black chassis material.
-  const carLight = new THREE.PointLight(0xffaa00, 10, 20);
-  carLight.position.set(0, 2, 0);
-  car.add(carLight);
-
-  car.position.set(START_X, START_Y, START_Z);
-  return car;
-};
+/**
+ * Deliberately not the physically correct rate. The world scrolls at speed * 100 units/sec
+ * (GameManager's DISTANCE_PER_SPEED_UNIT), which on a 0.45-radius wheel is ~222 rad/sec — 3.7
+ * radians between two frames at 60fps. Past half a spoke period per frame the eye reads the
+ * wagon-wheel effect: the rims stall, then crawl backwards. 9 rad/sec per unit of speed is ~1.4
+ * turns a second at the start of a run — clearly rolling, still visibly accelerating with the
+ * score, never aliasing. Correct here means legible, not accurate.
+ */
+const WHEEL_SPIN_RATE = 9;
+const WHEEL_YAW = 0.28;
+const WHEEL_YAW_LERP = 0.18;
 
 /**
  * The car's footprint, measured once from the assembled mesh in its rest pose.
- * Principle III: the alternative is `Box3.setFromObject` every frame, which walks
- * all ~20 meshes in the group to rediscover numbers that cannot change.
+ * Principle III: the alternative is `Box3.setFromObject` every frame, which walks every mesh in
+ * the group to rediscover numbers that cannot change.
  *
- * Reported as half-extents plus the offset of the box centre from the group origin,
- * because the car is *not* centred on its own origin — the nose reaches 2.71 units
- * forward while the tail reaches 2.40 back, putting the box centre ~0.16 ahead of
- * `position.z`. A collision test that assumed `position` was the centre would sit
- * the hitbox 0.16 units too far back, which is small enough to look like bad luck
- * rather than a bug.
+ * Reported as half-extents plus the offset of the box centre from the group origin, because the
+ * car is *not* centred on its own origin — the nose reaches further forward than the tail does
+ * back, so a collision test that assumed `position` was the centre would sit the hitbox behind
+ * the car by that difference, which is small enough to look like bad luck rather than a bug.
+ *
+ * This is also why CarModel returns the underglow unparented: anything inside the group lands
+ * in this measurement, and the glow quad is wider and longer than the car.
  */
 const measureHitbox = (car) => {
   const box = new THREE.Box3().setFromObject(car);
@@ -123,15 +69,23 @@ const measureHitbox = (car) => {
 
 export class PlayerCar {
   #group;
+  #wheels;
+  #underglow;
   #hitbox;
   #crashing = false;
   #steerable = false;
+  #wheelYaw = 0;
 
   constructor(scene, bus) {
-    this.#group = buildCar();
-    scene.add(this.#group);
-    // Measured before the first frame, while rotation is still zero. Steering banks
-    // the car, and a bank would inflate the measurement into the lean.
+    const { car, wheels, underglow } = buildCar();
+    this.#group = car;
+    this.#wheels = wheels;
+    this.#underglow = underglow;
+    scene.add(this.#group, this.#underglow);
+
+    this.reset();
+    // Measured after reset and before the first frame, while rotation is still zero. Steering
+    // banks the car, and a bank would inflate the measurement into the lean.
     this.#hitbox = measureHitbox(this.#group);
     bus.on('stateChanged', ({ from, to }) => this.#onStateChanged(from, to));
   }
@@ -140,38 +94,47 @@ export class PlayerCar {
   get object3d() { return this.#group; }
 
   /**
-   * Frozen `{ halfX, halfZ, offsetX, offsetZ }` in world units, relative to
-   * `object3d.position`. The collision *feel* constants are not applied here —
-   * this is the car's true size, and ObstacleManager owns how forgiving to be
-   * about it.
+   * Frozen `{ halfX, halfZ, offsetX, offsetZ }` in world units, relative to `object3d.position`.
+   * The collision *feel* constants are not applied here — this is the car's true size, and
+   * ObstacleManager owns how forgiving to be about it.
    */
   get hitbox() { return this.#hitbox; }
 
   reset() {
     this.#group.position.set(START_X, START_Y, START_Z);
     this.#group.rotation.set(0, 0, 0);
+    this.#underglow.position.set(START_X, START_Y + UNDERGLOW_Y, START_Z);
+    this.#underglow.visible = true;
+
   }
 
   /**
-   * `speed` is unused today — lateral steering is deliberately independent of how
-   * fast the world is moving, which is what makes the car feel controllable at high
-   * score. It stays in the signature because speed-scaled handling is a known
-   * upcoming change and this is the interface it will arrive through.
+   * `speed` now drives the wheel spin — it was accepted and ignored before this change, with a
+   * note promising a future use. Lateral steering stays deliberately independent of how fast the
+   * world is moving, which is what keeps the car controllable at high score, so it is the
+   * *visuals* that read the speed and not the handling.
    */
   update(dt, steerAxis, speed) {
     if (this.#crashing) {
       this.#group.rotation.y += CRASH_SPIN * dt;
       this.#group.rotation.z += CRASH_SPIN * dt;
-      return;
+    } else {
+      this.#drive(dt, steerAxis);
     }
+
+    this.#spinWheels(dt, steerAxis, speed);
+    this.#underglow.position.x = this.#group.position.x;
+  }
+
+  #drive(dt, steerAxis) {
     if (!this.#steerable) return; // menus: the car sits perfectly still, as before
 
     const { position, rotation } = this.#group;
 
-    // The rail check lives in the *condition*, not as a clamp after the move. Pinned
-    // against the edge the car falls through to the neutral branch and levels out
-    // instead of holding its bank. That asymmetry is the pre-split behaviour and the
-    // S1 gate compares against it, so it is preserved on purpose.
+    // The rail check lives in the *condition*, not as a clamp after the move. Pinned against the
+    // edge the car falls through to the neutral branch and levels out instead of holding its
+    // bank. That asymmetry is the pre-split behaviour and the S1 gate compares against it, so it
+    // is preserved on purpose.
     if (steerAxis < 0 && position.x > -X_LIMIT) {
       position.x -= CAR_SPEED_X * dt;
       rotation.z = THREE.MathUtils.lerp(rotation.z, BANK_ROLL, BANK_LERP);
@@ -186,16 +149,33 @@ export class PlayerCar {
     }
   }
 
+  #spinWheels(dt, steerAxis, speed) {
+    const roll = speed * WHEEL_SPIN_RATE * dt;
+    // Lerped rather than snapped, on the same sign convention the body banks with, so the wheels
+    // lead the chassis into a turn instead of hitting full lock on the first frame.
+    this.#wheelYaw = THREE.MathUtils.lerp(this.#wheelYaw, -steerAxis * WHEEL_YAW, WHEEL_YAW_LERP);
+
+    // Indexed rather than for-of, matching ObstacleManager's per-frame loops. for-of over an
+    // array constructs an ArrayIterator; V8 usually elides it once the function is optimised,
+    // but "usually elided" is a weaker guarantee than "never created", and this file's whole
+    // claim is the latter (Principle III).
+    for (let i = 0; i < this.#wheels.length; i++) {
+      const wheel = this.#wheels[i];
+      wheel.node.rotation.x += roll;
+      if (wheel.steers) wheel.node.rotation.y = this.#wheelYaw;
+    }
+  }
+
   /**
-   * ADR (Principle II): these two flags mirror a GameManager transition rather than
-   * duplicating it. They select an animation mode — they are never read as the
-   * answer to "is the game over?", and nothing outside this file can see them.
+   * ADR (Principle II): these two flags mirror a GameManager transition rather than duplicating
+   * it. They select an animation mode — they are never read as the answer to "is the game
+   * over?", and nothing outside this file can see them.
    */
   #onStateChanged(from, to) {
     this.#crashing = to === State.GAME_OVER;
     this.#steerable = to === State.PLAYING;
-    // A resume enters PLAYING too. Without the `from` check, unpausing would snap the
-    // car back to the centre lane and level its bank — a teleport, mid-dodge.
+    // A resume enters PLAYING too. Without the `from` check, unpausing would snap the car back
+    // to the centre lane and level its bank — a teleport, mid-dodge.
     if (to === State.PLAYING && from !== State.PAUSED) this.reset();
   }
 }

@@ -50,8 +50,9 @@ const WHEEL_YAW_LERP = 0.18;
 
 /**
  * Thruster exhaust. rate * lifespan is the live-particle ceiling: 420 * 0.55 = 231, comfortably
- * under max, so the plume never starves at the top of the speed curve. The cap earns its place —
- * rate scales with game speed, and speed has no upper bound over a long run.
+ * under max, so the plume never starves at the top of the speed curve. The cap still earns its
+ * place now that GameManager's SPEED_CEILING bounds speed: the ceiling is 4.8 and the rate would
+ * reach 720 there, so this is what the plume looks like from speed 2.8 upward either way.
  */
 const THRUSTER = Object.freeze({
   max: 300, color: 0xff7a1a, size: 0.34, gravity: 2.2, drag: 0.9, life: 0.55,

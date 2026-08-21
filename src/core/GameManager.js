@@ -25,12 +25,68 @@ export const State = Object.freeze({
   GAME_OVER: 'GAME_OVER'
 });
 
-// Carried over verbatim from the pre-split loop. These numbers are the game's feel;
-// Blueprint Phase 3 is where the speed curve is allowed to change, not here.
-const BASE_SPEED = 1.0;
+// Carried over verbatim from the pre-split loop. These numbers are the game's feel.
+export const BASE_SPEED = 1.0;
 const DISTANCE_PER_SPEED_UNIT = 100; // "arbitrary multiplier for feel" — original's words
 const SCORE_PER_DISTANCE = 0.1;
 const SPEED_GAIN_PER_POINT = 0.001;
+
+/**
+ * ARCHITECTURE: the speed curve is bounded
+ * Decision: speed is a smooth minimum of the original linear curve and a hard ceiling —
+ *   `min(BASE_SPEED + score * SPEED_GAIN_PER_POINT, SPEED_CEILING)` with the corner rounded
+ *   off. SPEED_GAIN_PER_POINT is unchanged and is still the curve's opening slope, so the
+ *   first two and a half minutes of every run are the old numbers to four decimal places.
+ * Reason: the linear curve had no upper bound and nothing downstream was built for one.
+ *   Three defects, one cause. `gate-sweep` (patterns.js) is three full-width gates 180 units
+ *   apart with a 1.28-unit passable window; clearing all three costs 10.72 units of lateral
+ *   travel across 354.97 units of z, and against the car's 20 units/sec the arithmetic runs
+ *   out at speed 6.6229. Tighter still, `wall-cross` ends pinning the player at x <= -2.36
+ *   while gate-sweep *opens* demanding x >= 5.36, so that pair — a legal consecutive draw,
+ *   both unlocked by tier 1 — becomes unsolvable at speed 5.1813. And AudioManager's engine
+ *   cutoff crossed Nyquist at speed ~26.3, logging a BiquadFilter range warning on every
+ *   parameter write from there on. S6's pattern audit was right about every speed it tested;
+ *   it simply assumed a run topped out near tier 5's 4.2.
+ * Trade-off: a long run stops getting faster, and scores climb more slowly late because
+ *   score is fed by speed — 10,000 points is ~287 seconds of play instead of ~240. That is
+ *   the intended shape: past tier 5 every pattern is unlocked and the inter-pattern gap is
+ *   already at its 95-unit floor, so difficulty hands off from speed to density instead of
+ *   buying more speed than the content can survive.
+ * If the game feels like it stops accelerating too early, SPEED_KNEE is the dial — lower is
+ *   a longer, gentler roll-off that leaves the old curve sooner, higher tracks the old curve
+ *   further and then bends harder. The ceiling is not the dial: 5.1813 is a measured wall.
+ */
+export const SPEED_CEILING = 4.8;
+
+/**
+ * How sharply the curve turns at the ceiling. 10 holds the new curve within 0.06 of the old
+ * linear one at every tier threshold (the largest gap is 0.052, at 3200) while keeping the
+ * roll-off spread over roughly ninety seconds of play rather than thirty. Raising it tightens
+ * the first number and worsens the second; both were measured, neither was guessed.
+ */
+const SPEED_KNEE = 10;
+
+/** Hoisted: the per-frame path should be two `Math.pow` calls and no divisions. */
+const SPEED_RANGE = SPEED_CEILING - BASE_SPEED;
+const SPEED_PROGRESS_PER_POINT = SPEED_GAIN_PER_POINT / SPEED_RANGE;
+const SPEED_KNEE_INVERSE = 1 / SPEED_KNEE;
+
+/**
+ * `progress` is 1.0 at exactly the score where the old linear curve would have reached the
+ * ceiling, and the blend is `progress / (1 + progress^n)^(1/n)` — a smooth min(progress, 1).
+ *
+ * Written here in its reciprocal form, which is not a rearrangement for taste. Forwards,
+ * `progress ** 10` overflows to Infinity for a large enough score and the whole expression
+ * collapses to BASE_SPEED: a silent fall off a cliff at the far end of the very axis this
+ * function exists to bound, which is the same class of bug as the one it is fixing.
+ * Reciprocally, `progress ** -10` underflows to 0 and the result saturates at the ceiling;
+ * at score 0 it overflows to Infinity and yields exactly BASE_SPEED. Both ends come out
+ * right by construction instead of by a guard clause.
+ */
+const curveSpeed = (score) => {
+  const progress = score * SPEED_PROGRESS_PER_POINT;
+  return BASE_SPEED + SPEED_RANGE / Math.pow(1 + Math.pow(progress, -SPEED_KNEE), SPEED_KNEE_INVERSE);
+};
 
 /**
  * ADR (Principle II): difficulty tier is derived state, and it is derived *here* because it
@@ -39,11 +95,12 @@ const SPEED_GAIN_PER_POINT = 0.001;
  * of truth this principle exists to prevent, because the day a power-up freezes the tier
  * without freezing the score, the two would silently disagree.
  *
- * Score entering each tier. Deliberately *not* accompanied by a change to the speed curve
- * above: the original plan for this step swapped the linear curve for an asymptotic one, and
- * that decision belongs to whoever tunes pacing after playing the tiered obstacle set, not
- * bundled in silently alongside it. Tiers add difficulty through obstacle variety and
- * density; speed is untouched.
+ * Score entering each tier. Unmoved by the speed curve above becoming asymptotic, and that is
+ * the point: these five numbers are what the pattern library was authored against, so the
+ * curve was fitted to land within 0.06 of the old linear speed at every one of them rather
+ * than the thresholds being re-derived around a new curve. Tiers add difficulty through
+ * obstacle variety and density; the ceiling is what stops speed from adding difficulty the
+ * patterns cannot survive.
  */
 const TIER_THRESHOLDS = Object.freeze([250, 600, 1200, 2000, 3200]);
 
@@ -93,7 +150,10 @@ export const POWERUP_KINDS = Object.freeze(['shield', 'magnet', 'hyperdrive']);
  * The patterns' solvability margins are audited at tier-5 speed with no allowance for a
  * multiplier on top, and this does not violate that: invulnerability is keyed to the same
  * field as the boost, so the two begin and end on the same frame and there is no instant where
- * the player is both faster than the audit and mortal.
+ * the player is both faster than the audit and mortal. That guarantee is load-bearing rather
+ * than incidental — 1.45x on top of SPEED_CEILING is 6.96, past both walls the ceiling exists
+ * to stay under — so anything that ever separates the boost from the invulnerability has to
+ * revisit the ceiling in the same edit.
  *
  * One bounded interaction is worth knowing about. initPulse anchors a pulse gate's open half
  * against the travel time measured at *spawn*, so a gate that spawns during hyperdrive and
@@ -237,7 +297,7 @@ export class GameManager {
     // *last* frame's score, then this frame's distance is banked into it. Flipping
     // these two lines compounds the speed curve and the run gets measurably faster.
     const boost = this.#powerups.hyperdrive > 0 ? HYPERDRIVE_SPEED_SCALE : 1;
-    this.#speed = (BASE_SPEED + this.#score * SPEED_GAIN_PER_POINT) * boost;
+    this.#speed = curveSpeed(this.#score) * boost;
     this.#moveDist = this.#speed * DISTANCE_PER_SPEED_UNIT * dt;
     this.#score += this.#moveDist * SCORE_PER_DISTANCE;
     this.#advanceTier();

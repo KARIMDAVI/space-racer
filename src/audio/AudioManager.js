@@ -1,4 +1,4 @@
-import { State } from '../core/GameManager.js';
+import { BASE_SPEED, SPEED_CEILING, State } from '../core/GameManager.js';
 import {
   ENGINE_SUB_RATIO,
   createEngineVoice,
@@ -54,22 +54,57 @@ const MUSIC_GAIN = 0.35;
 const SFX_GAIN = 0.6;
 const MUTE_RAMP = 0.03;  // seconds — a hard 0 on a live oscillator is an audible click
 
-// --- Engine performance. Tied to GameManager's speed, which starts at 1.0 and climbs
-// by 0.001 per point — roughly 1.0 → 2.5 over a long run, so that is the range tuned
-// for. (The engine's *timbre* is in voices.js; these map the run onto it.)
-const ENGINE_BASE_HZ = 52;
-const ENGINE_HZ_PER_SPEED = 40;    // speed 1.0 → 92Hz, speed 2.5 → 152Hz
-const ENGINE_CUTOFF_BASE = 320;
-const ENGINE_CUTOFF_PER_SPEED = 900;
+/**
+ * --- Engine performance. (The engine's *timbre* is in voices.js; these map the run onto it.)
+ *
+ * ADR: written as the two *endpoints* of GameManager's speed range and imported from it,
+ * rather than as a slope with the top of the range left implicit. The previous form was
+ * `52 + speed * 40`, above a comment reading "roughly 1.0 → 2.5 over a long run, so that is
+ * the range tuned for" — and the range was never 1.0 → 2.5. Speed was unbounded, so the run
+ * simply kept walking up the slope: the cutoff passed Nyquist at speed ~26.3 and every
+ * parameter write after that logged a BiquadFilter range warning. The tuning was not wrong,
+ * its unstated assumption was, and the fix for that is to stop leaving it unstated. If the
+ * ceiling moves, these follow it; a stale comment cannot lie about the top of the range
+ * because there is no longer a comment holding that number.
+ *
+ * The value at BASE_SPEED is preserved to the digit, because that one *was* verified — it is
+ * what every run has sounded like in its opening seconds. The value at the ceiling is a
+ * fresh choice: one octave over the whole run reads as a motor winding out, where the old
+ * slope extended to the real ceiling would have put the top of a long run at 244Hz, which is
+ * a whine rather than an engine, and is where an unbounded run then sat forever.
+ */
+const ENGINE_HZ_AT_BASE = 92;         // exactly what the old 52 + 40 * 1.0 produced
+const ENGINE_HZ_AT_CEILING = 184;     // one octave up, and the top of the range for good
+const ENGINE_CUTOFF_AT_BASE = 1220;   // exactly what the old 320 + 900 * 1.0 produced
+/** Holds the old tuning's cutoff-to-fundamental ratio (~17) at the top, so the timbre lands the same. */
+const ENGINE_CUTOFF_AT_CEILING = 3200;
+
+const SPEED_SPAN = SPEED_CEILING - BASE_SPEED;
+const ENGINE_HZ_PER_SPEED = (ENGINE_HZ_AT_CEILING - ENGINE_HZ_AT_BASE) / SPEED_SPAN;
+const ENGINE_BASE_HZ = ENGINE_HZ_AT_BASE - ENGINE_HZ_PER_SPEED * BASE_SPEED;
+const ENGINE_CUTOFF_PER_SPEED = (ENGINE_CUTOFF_AT_CEILING - ENGINE_CUTOFF_AT_BASE) / SPEED_SPAN;
+const ENGINE_CUTOFF_BASE = ENGINE_CUTOFF_AT_BASE - ENGINE_CUTOFF_PER_SPEED * BASE_SPEED;
 const ENGINE_GAIN = 0.22;
 const ENGINE_GLIDE = 0.12;         // setTargetAtTime constant — pitch chases speed, never jumps
 const ENGINE_FADE = 0.25;          // slower, so leaving PLAYING is a spin-down not a cut
 
-// --- Wind performance. Gain rises with the square of speed because that is what drag
-// does, and because a linear ramp leaves the bottom of the speed range as breezy as
-// the top of it.
+/**
+ * --- Wind performance. Linear in speed now, where it used to be `speed * speed * 0.055`.
+ *
+ * The square was there for dynamic range, not for physics: the note it replaces argued that
+ * "a linear ramp leaves the bottom of the speed range as breezy as the top of it", which was
+ * true of the 2.5x span it assumed. Over the ceiling's real 4.8x span linear already opens a
+ * wider gap than the square opened over 2.5x, so the square is no longer buying anything —
+ * and it had become actively harmful, because squaring a speed 4.8 gives a gain of 1.27 on a
+ * bus this file's own header keeps "well under 1.0 on purpose". The run would have ended as
+ * wind with an engine somewhere underneath it.
+ *
+ * The coefficient is deliberately the same 0.055, dropping only the exponent: the launch
+ * level is therefore bit-identical to before, and the top of the run lands at 0.264 — inside
+ * the 0.344 the old tuning was aiming at, with the headroom back.
+ */
 const NOISE_SECONDS = 2;           // long enough that the loop point is not a rhythm
-const WIND_GAIN_PER_SPEED_SQ = 0.055;
+const WIND_GAIN_PER_SPEED = 0.055; // speed 1.0 → 0.055 (unchanged), ceiling → 0.264
 const WIND_GLIDE = 0.3;            // lazier than the engine; wind should lag the throttle
 
 /**
@@ -78,8 +113,10 @@ const WIND_GLIDE = 0.3;            // lazier than the engine; wind should lag th
  * frame would push ~300 automation events per second onto the param timelines for
  * changes in the third decimal place. Below this threshold nothing is retargeted at
  * all. 0.004 works out to a retarget roughly twice a second, which the 0.12s glide
- * smooths into a continuous slide — and 0.004 of speed is 0.16Hz, far below what an
- * ear resolves at these frequencies.
+ * smooths into a continuous slide — and 0.004 of speed is under 0.1Hz, far below what an
+ * ear resolves at these frequencies. (The "asymptotic" above was aspirational when it was
+ * written and is now literally true, which only makes the throttle cheaper: speed slows as
+ * it approaches the ceiling, so late in a run there is even less to retarget.)
  */
 const SPEED_EPSILON = 0.004;
 
@@ -237,7 +274,7 @@ export class AudioManager {
     // Collapsing "not playing" into speed 0 means one comparison covers both the
     // throttle and every exit from PLAYING: menu, pause and game-over all arrive here
     // as a step to 0, which is always larger than the epsilon.
-    this.#windGain.gain.setTargetAtTime(speed * speed * WIND_GAIN_PER_SPEED_SQ, now, WIND_GLIDE);
+    this.#windGain.gain.setTargetAtTime(speed * WIND_GAIN_PER_SPEED, now, WIND_GLIDE);
 
     // The crash schedules a pitch dive and then a fade; re-targeting those params while
     // it runs would drag the dive back up on the very next frame.

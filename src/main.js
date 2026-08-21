@@ -7,6 +7,7 @@ import { InputHandler } from './core/InputHandler.js';
 import { PersistenceService } from './core/PersistenceService.js';
 import { AudioManager } from './audio/AudioManager.js';
 import { PlayerCar } from './entities/PlayerCar.js';
+import { CollectibleManager } from './world/CollectibleManager.js';
 import { Environment } from './world/Environment.js';
 import { ObstacleManager } from './world/ObstacleManager.js';
 import { RenderPipeline } from './render/RenderPipeline.js';
@@ -71,6 +72,10 @@ const input = new InputHandler(bus);
 const player = new PlayerCar(scene, bus);
 const environment = new Environment(scene, bus); // eases the road and fog on tierChanged
 const obstacles = new ObstacleManager(scene, bus, player); // reads the car's hitbox once, at build time
+// Built after ObstacleManager so EventBus's subscription order puts the obstacle pool's
+// `stateChanged` reset ahead of this one's. Neither depends on the other, and saying so here is
+// cheaper than the day one of them starts to.
+const collectibles = new CollectibleManager(scene, bus, player);
 const pipeline = new RenderPipeline(canvas, scene, game, bus); // subscribes to `crashed` for camera trauma
 const assets = new AssetManager();
 // Built before the bus.on lines below on purpose: EventBus dispatches in subscription
@@ -110,6 +115,26 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) game.pause();
 });
 
+/**
+ * ADR (Principle V — complete, and costs nothing it does not earn): a dev-only handle on the
+ * composed graph, for driving the game from a test harness or a console.
+ *
+ * `import.meta.env.DEV` is a literal `false` in a production build, so Vite's minifier deletes
+ * this branch outright — the shipped bundle contains neither the assignment nor the object, and
+ * that is checkable by grepping dist for the name. It is therefore not an API and not a second
+ * way into game state: nothing in `src/` reads it, and in the build a player runs it does not
+ * exist.
+ *
+ * It earns its place because the alternative is worse. Verifying that hyperdrive restores the
+ * bloom strength *exactly*, or that a magnet actually moves an orb in x, means reading real
+ * values at three points in time; without a handle, that becomes either a screenshot someone
+ * squints at, or a temporary hack pasted in and deleted before every commit — which is a
+ * verification step that silently stops happening.
+ */
+if (import.meta.env.DEV) {
+  window.__spaceRacer = { game, bus, scene, player, pipeline, obstacles, collectibles, input };
+}
+
 const clock = new THREE.Clock();
 
 function tick() {
@@ -137,6 +162,9 @@ function tick() {
     player.update(dt, input.steerAxis, game.speed);
     environment.update(dt, game);
     obstacles.update(dt, game);       // may emit `crashed`, which lands synchronously
+    // After the obstacles on purpose: the crash frame has already left PLAYING by the time this
+    // runs, so a pickup can never be awarded on the frame the run ended.
+    collectibles.update(dt, game);
     hud.update();
   }
 

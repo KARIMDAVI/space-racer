@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { EventBus } from './core/EventBus.js';
 import { GameManager } from './core/GameManager.js';
 import { InputHandler } from './core/InputHandler.js';
+import { PersistenceService } from './core/PersistenceService.js';
 import { PlayerCar } from './entities/PlayerCar.js';
 import { Environment } from './world/Environment.js';
 import { ObstacleManager } from './world/ObstacleManager.js';
@@ -33,7 +34,8 @@ const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x000000, 0.015); // deep space — also hides the spawn line
 
 const bus = new EventBus();
-const game = new GameManager(bus);
+const persistence = new PersistenceService();
+const game = new GameManager(bus, persistence);
 const input = new InputHandler();
 const player = new PlayerCar(scene, bus);
 const environment = new Environment(scene);

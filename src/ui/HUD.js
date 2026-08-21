@@ -32,6 +32,8 @@ export class HUD {
   #startScreen;
   #gameOverScreen;
   #finalScore;
+  #bestLabel;
+  #bestScore;
 
   constructor(game, bus) {
     this.#game = game;
@@ -39,11 +41,14 @@ export class HUD {
     this.#startScreen = requireElement('startScreen');
     this.#gameOverScreen = requireElement('gameOverScreen');
     this.#finalScore = requireElement('finalScore');
+    this.#bestLabel = requireElement('bestLabel');
+    this.#bestScore = requireElement('bestScore');
 
     requireElement('startButton').addEventListener('click', () => game.start());
     requireElement('restartButton').addEventListener('click', () => game.start());
 
     bus.on('stateChanged', ({ to }) => this.#onStateChanged(to));
+    bus.on('newHighScore', () => { this.#bestLabel.textContent = 'NEW RECORD'; });
   }
 
   update() {
@@ -53,6 +58,7 @@ export class HUD {
 
   #onStateChanged(to) {
     if (to === State.PLAYING) {
+      this.#bestLabel.textContent = 'BEST';
       this.#startScreen.classList.add(HIDDEN);
       this.#gameOverScreen.classList.add(HIDDEN);
       return;
@@ -60,6 +66,9 @@ export class HUD {
 
     if (to === State.GAME_OVER) {
       this.#finalScore.textContent = Math.floor(this.#game.score);
+      // GameManager persists the record before announcing the transition, so this
+      // read is already current — see the ordering note in gameOver().
+      this.#bestScore.textContent = this.#game.highScore;
       this.#gameOverScreen.classList.remove(HIDDEN);
     }
   }

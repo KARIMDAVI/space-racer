@@ -34,13 +34,15 @@ const SPEED_GAIN_PER_POINT = 0.001;
 
 export class GameManager {
   #bus;
+  #persistence;
   #state = State.MENU;
   #score = 0;
   #speed = 0;
   #moveDist = 0;
 
-  constructor(bus) {
+  constructor(bus, persistence) {
     this.#bus = bus;
+    this.#persistence = persistence;
   }
 
   get state() { return this.#state; }
@@ -54,6 +56,9 @@ export class GameManager {
    */
   get moveDist() { return this.#moveDist; }
 
+  /** Proxied so HUD reads save data through the state owner, never the store directly. */
+  get highScore() { return this.#persistence.getHighScore(); }
+
   start() {
     if (this.#state === State.PLAYING) return; // guard: never silently wipe a live run
     this.#score = 0;
@@ -66,7 +71,15 @@ export class GameManager {
     if (this.#state !== State.PLAYING) return; // two obstacles in one frame, one death
     this.#speed = 0;
     this.#moveDist = 0;
+
+    const final = Math.floor(this.#score);
+    const isRecord = final > this.#persistence.getHighScore();
+    // Persist BEFORE announcing the transition: HUD renders the best score off the
+    // stateChanged handler, so the store has to already be current when it reads.
+    if (isRecord) this.#persistence.submitScore(final);
+
     this.#transition(State.GAME_OVER);
+    if (isRecord) this.#bus.emit('newHighScore', { score: final });
   }
 
   update(dt) {

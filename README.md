@@ -325,4 +325,4 @@ This project is maintained under strict governance outlined in [`CONSTITUTION.md
 
 This project is licensed under the **MIT License** — see the [`LICENSE`](./LICENSE) file for complete details.
 
-Copyright (c) 2026 **KiMOJesus**
+Copyright (c) 2026 **K!MO**

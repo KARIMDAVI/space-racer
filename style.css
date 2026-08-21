@@ -46,6 +46,51 @@ body {
   letter-spacing: 2px;
 }
 
+/*
+ * The mute toggle. #uiContainer sets pointer-events: none so the canvas stays
+ * clickable, and #hud inherits it — this button is the first thing in the HUD that
+ * has to actually be pressed, so it opts itself back in. Styled as a quieter sibling
+ * of .glow-button rather than reusing it: this sits over live gameplay and a 25px
+ * orange bloom in the corner of the screen would compete with the road.
+ */
+.hud-button {
+  pointer-events: auto;
+  /*
+   * Lifted above the overlay screens, and only the button — not the whole #hud.
+   * .overlay-screen is absolutely positioned and covers the viewport with
+   * pointer-events: auto, so without this the toggle is unclickable in every state
+   * except mid-run, which is the one moment a player is least able to use it. A
+   * positioned element with a z-index beats the auto-z-index overlays inside
+   * #uiContainer's stacking context; raising #hud instead would drag the live score
+   * out over the game-over screen with it.
+   */
+  position: relative;
+  z-index: 1;
+  background: transparent;
+  border: 1px solid rgba(255, 136, 0, 0.5);
+  color: #ffaa00;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 6px 14px;
+  cursor: pointer;
+  opacity: 0.65;
+  transition: opacity 0.2s ease, border-color 0.2s ease;
+}
+
+.hud-button:hover {
+  opacity: 1;
+  border-color: #ff8800;
+}
+
+/* Muted is the state worth signalling, so it's the state that loses the glow colour. */
+.hud-button[aria-pressed='true'] {
+  color: #777;
+  border-color: rgba(255, 255, 255, 0.25);
+  text-shadow: none;
+}
+
 /* Screens */
 .overlay-screen {
   position: absolute;

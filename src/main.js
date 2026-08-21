@@ -77,7 +77,7 @@ const assets = new AssetManager();
 // order, so AudioManager's `crashed` handler runs while the engine is still at speed,
 // rather than after game.gameOver() has already taken the run out of PLAYING.
 const audio = new AudioManager(bus, persistence, assets);
-const hud = new HUD(game, bus);
+const hud = new HUD(game, bus, audio); // owns the mute button; calls into audio, never past it
 
 // ObstacleManager reports the impact; GameManager decides what death means. This one
 // hop is what keeps GameManager the single mutation entry point (Principle II).
